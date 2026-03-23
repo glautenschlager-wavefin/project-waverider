@@ -1,0 +1,13 @@
+# This project uses Poetry for dependency management
+# See pyproject.toml for all dependencies
+#
+# To install:
+#   pip install poetry
+#   poetry install
+#
+# For development with all tools:
+#   poetry install --with dev
+#
+# To add new dependencies:
+#   poetry add package_name
+#   poetry add --group dev package_name
