@@ -51,6 +51,23 @@ def main():
         print("    brew services start neo4j")
         return 1
 
+    except PermissionError as e:
+        print(f"✗ Authentication error: {e}")
+        print("\nChecks:")
+        print("  1. Confirm Neo4j is running: make neo4j-status")
+        print("  2. Confirm the Waverider client sees your password: echo $NEO4J_PASSWORD")
+        print("  3. Or create a project .env file with NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD")
+        print("  4. Verify the password matches the one configured inside Neo4j itself")
+        return 1
+
+    except ValueError as e:
+        print(f"✗ Configuration error: {e}")
+        print("\nThe client cannot see your Neo4j credentials.")
+        print("  1. Export them in this shell before running Poetry commands")
+        print("  2. Or create a project .env file from .env.example")
+        print("  3. Then rerun: poetry run python scripts/test_neo4j_connection.py")
+        return 1
+
     except Exception as e:
         print(f"✗ Error: {e}")
         return 1

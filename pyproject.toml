@@ -18,6 +18,7 @@ packages = [{ include = "waverider", from = "src" }]
 python = "^3.14"
 pydantic = "^2.11"
 pydantic-settings = "^2.10"
+python-dotenv = "^1.1.1"
 requests = "^2.32.3"
 neo4j = "^5.28.1"
 openai = "^1.72.0"

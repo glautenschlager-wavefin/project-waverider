@@ -1,10 +1,19 @@
-"""
-Neo4j knowledge graph management for codebases.
-"""
+"""Neo4j knowledge graph management for codebases."""
 
 import os
-from typing import Dict, List, Any, Optional
-from abc import ABC
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
+
+
+def _load_project_env() -> None:
+    """Load environment variables from common project `.env` locations."""
+    current_file = Path(__file__).resolve()
+    project_root = current_file.parents[2]
+
+    load_dotenv(project_root / ".env", override=False)
+    load_dotenv(override=False)
 
 
 class Neo4jGraphManager:
@@ -23,6 +32,8 @@ class Neo4jGraphManager:
             user: Neo4j username (uses NEO4J_USER env var if not provided)
             password: Neo4j password (uses NEO4J_PASSWORD env var if not provided)
         """
+        _load_project_env()
+
         self.uri = uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
         self.user = user or os.getenv("NEO4J_USER", "neo4j")
         self.password = password or os.getenv("NEO4J_PASSWORD")
@@ -40,15 +51,24 @@ class Neo4jGraphManager:
         """Initialize Neo4j driver."""
         try:
             from neo4j import GraphDatabase
+            from neo4j.exceptions import AuthError, ServiceUnavailable
 
             self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
-            # Test connection
             self.driver.verify_connectivity()
             print("Connected to Neo4j")
         except ImportError:
             raise ImportError("neo4j package not found. Install with: pip install neo4j")
+        except AuthError as e:
+            raise PermissionError(
+                "Neo4j authentication failed. Check that NEO4J_USER/NEO4J_PASSWORD match "
+                "the credentials configured inside the running Neo4j server. "
+                "Setting an environment variable only configures the Waverider client; it does not "
+                "set the server password."
+            ) from e
+        except ServiceUnavailable as e:
+            raise ConnectionError(f"Failed to connect to Neo4j: {e}") from e
         except Exception as e:
-            raise ConnectionError(f"Failed to connect to Neo4j: {e}")
+            raise ConnectionError(f"Failed to connect to Neo4j: {e}") from e
 
     def close(self):
         """Close Neo4j connection."""

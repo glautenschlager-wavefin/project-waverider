@@ -115,6 +115,8 @@ python scripts/backup_sqlite.py
 
 ## Neo4j Configuration
 
+Neo4j is not embedded like SQLite. If you want graph features, you need a running Neo4j server process, either as a local service or a Docker container.
+
 ### Option 1: Docker Setup (Recommended)
 
 Neo4j requires a running server instance. Using Docker is the simplest approach:
@@ -140,6 +142,27 @@ docker run \
 brew install neo4j
 brew services start neo4j
 ```
+
+Service management on macOS:
+
+```bash
+# Start in the background and restart on login
+brew services start neo4j
+
+# Stop the background service
+brew services stop neo4j
+
+# Restart after config changes
+brew services restart neo4j
+
+# Confirm whether the service is running
+brew services list | grep neo4j
+
+# Run in the foreground for debugging
+/opt/homebrew/opt/neo4j/bin/neo4j console
+```
+
+Homebrew currently installs Neo4j with `openjdk@21` and `cypher-shell` as dependencies, so `brew install neo4j` is sufficient for a normal local setup.
 
 **Ubuntu/Linux:**
 ```bash
@@ -176,7 +199,7 @@ This creates:
 ### Verify Neo4j Connection
 
 ```bash
-python scripts/test_neo4j_connection.py
+poetry run python scripts/test_neo4j_connection.py
 ```
 
 Access Neo4j Browser at: `http://localhost:7474/browser/`

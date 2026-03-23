@@ -149,6 +149,50 @@ NEO4J_USER=neo4j
 NEO4J_PASSWORD=your-password
 ```
 
+## Neo4j Runtime
+
+SQLite is embedded and needs no separate process. Neo4j is different: it must be running as its own database service before Waverider can connect to it.
+
+For local macOS development, Homebrew is the simplest option:
+
+```bash
+brew install neo4j
+brew services start neo4j
+```
+
+Useful management commands:
+
+```bash
+# Start Neo4j as a background service
+brew services start neo4j
+
+# Stop the service
+brew services stop neo4j
+
+# Restart after config changes
+brew services restart neo4j
+
+# Check service status
+brew services list | grep neo4j
+
+# Run in the foreground instead of as a service
+/opt/homebrew/opt/neo4j/bin/neo4j console
+```
+
+Once running, the local endpoints are typically:
+
+```text
+Browser: http://localhost:7474
+Bolt:    bolt://localhost:7687
+```
+
+Then initialize and verify Waverider's Neo4j integration:
+
+```bash
+poetry run python scripts/setup_neo4j.py
+poetry run python scripts/test_neo4j_connection.py
+```
+
 ## Contributing
 
 This is an experimental project. Contributions welcome!

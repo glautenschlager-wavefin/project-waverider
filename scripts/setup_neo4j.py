@@ -37,6 +37,14 @@ def main():
             "-e NEO4J_AUTH=neo4j/password neo4j:latest"
         )
         return 1
+    except PermissionError as e:
+        print(f"✗ Authentication error: {e}")
+        print("\nSet NEO4J_USER and NEO4J_PASSWORD in your shell or project .env file.")
+        return 1
+    except ValueError as e:
+        print(f"✗ Configuration error: {e}")
+        print("\nSet NEO4J_USER and NEO4J_PASSWORD in your shell or project .env file.")
+        return 1
     except Exception as e:
         print(f"✗ Error initializing Neo4j: {e}")
         return 1
