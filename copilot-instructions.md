@@ -8,13 +8,21 @@ This workspace has access to **Waverider** — a semantic code search and indexi
 
 1. **`search_codebase`** (keyword search via Neo4j)
    - Use for: Finding code by name, class, function, keyword
+   - Returns: File paths, matching function signatures with docstrings, class names with docstrings, and a full list of all functions/classes in each file
    - Parameters: `query`, `codebase_name`, `limit`
-   - Example: "Find all uses of DatabaseManager"
 
 2. **`retrieve_code`** (semantic search via embeddings)
    - Use for: Finding code by concept, functionality, design pattern
+   - Returns: **Full source code** of matching functions/methods with docstrings, line numbers, and similarity scores
    - Parameters: `query`, `codebase_name`, `limit`
-   - Example: "Find code that handles database connection pooling"
+
+### How to Use Waverider Results
+
+**IMPORTANT: When Waverider MCP tools return relevant code snippets, use them directly to answer questions. Do not read original source files unless the snippets are clearly insufficient for the question at hand.**
+
+- `retrieve_code` returns complete function/method implementations. Prefer it for "how does X work?" questions.
+- `search_codebase` returns structural overviews with signatures and docstrings. Use it to discover what exists, then use `retrieve_code` for implementation details.
+- Only fall back to reading source files if the returned snippets don't cover the specific context needed (e.g., module-level configuration, cross-file relationships not captured in snippets).
 
 ### When to Use Waverider
 
@@ -37,9 +45,9 @@ The codebase name is `waverider` — use this when calling the MCP tools.
 ## Waverider System Overview
 
 Waverider indexes Python codebases using:
-- **Embeddings**: OpenAI, Ollama (local), or Mock providers
-- **Storage**: SQLite (embeddings) + Neo4j (relationships)
+- **Embeddings**: Ollama (local, offline: nomic-embed-text)
+- **Storage**: SQLite (embeddings + snippets) + Neo4j (structural relationships)
 - **Search**: Semantic (embedding similarity) + Keyword (Neo4j cypher)
-- **Extraction**: AST-based Python snippets (functions, classes, methods)
+- **Extraction**: AST-based Python snippets (functions, classes with method signatures, module constants, imports)
 
 Use the MCP tools to let users explore their codebase semantically.

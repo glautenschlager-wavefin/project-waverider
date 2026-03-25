@@ -149,6 +149,7 @@ class Neo4jGraphManager:
         function_name: str,
         language: str = "python",
         signature: str = "",
+        docstring: str = "",
     ) -> None:
         """Add a function node.
 
@@ -157,19 +158,21 @@ class Neo4jGraphManager:
             function_name: Function name
             language: Programming language
             signature: Function signature
+            docstring: Function docstring
         """
         with self.driver.session() as session:
             session.run(
                 """
                 MATCH (f:CodeFile {path: $file_path})
                 MERGE (func:Function {name: $function_name, file_id: $file_path})
-                SET func.language = $language, func.signature = $signature
+                SET func.language = $language, func.signature = $signature, func.docstring = $docstring
                 MERGE (f)-[:CONTAINS_FUNCTION]->(func)
             """,
                 file_path=file_path,
                 function_name=function_name,
                 language=language,
                 signature=signature,
+                docstring=docstring,
             )
 
     def add_class(
@@ -178,6 +181,7 @@ class Neo4jGraphManager:
         class_name: str,
         language: str = "python",
         parent_class: Optional[str] = None,
+        docstring: str = "",
     ) -> None:
         """Add a class node.
 
@@ -186,19 +190,21 @@ class Neo4jGraphManager:
             class_name: Class name
             language: Programming language
             parent_class: Parent class if applicable
+            docstring: Class docstring
         """
         with self.driver.session() as session:
             session.run(
                 """
                 MATCH (f:CodeFile {path: $file_path})
                 MERGE (cls:Class {name: $class_name, file_id: $file_path})
-                SET cls.language = $language, cls.parent_class = $parent_class
+                SET cls.language = $language, cls.parent_class = $parent_class, cls.docstring = $docstring
                 MERGE (f)-[:CONTAINS_CLASS]->(cls)
             """,
                 file_path=file_path,
                 class_name=class_name,
                 language=language,
                 parent_class=parent_class,
+                docstring=docstring,
             )
 
     def add_function_call(self, caller_name: str, callee_name: str) -> None:

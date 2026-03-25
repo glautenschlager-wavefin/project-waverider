@@ -8,7 +8,7 @@ from waverider.indexer import CodebaseIndexer
 
 
 def test_extract_python_snippets_class_is_compact() -> None:
-    """Class snippets should include declaration/docstring but not full method bodies."""
+    """Class snippets should include declaration/docstring and method signatures but not full method bodies."""
     indexer = CodebaseIndexer(
         db_manager=DatabaseManager(db_path=":memory:"),
         embedding_provider=MockEmbeddings(dimension=8),
@@ -35,7 +35,11 @@ class Example:
 
     assert "class Example:" in class_content
     assert "Small class docstring." in class_content
-    assert "def method_one" not in class_content
-    assert "def method_two" not in class_content
+    # Class snippet should include method signatures (one-liners)
+    assert "def method_one" in class_content
+    assert "def method_two" in class_content
+    # But should NOT contain method bodies
+    assert "return 1" not in class_content
+    assert "return 2" not in class_content
 
     assert {s.name for s in function_snippets} >= {"method_one", "method_two"}

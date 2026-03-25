@@ -31,14 +31,11 @@ Examples:
   # Index with SQLite only (faster)
   python build_index.py --codebase-path /path/to/code --index-name myproject --use-sqlite
 
-  # Use OpenAI embeddings (requires OPENAI_API_KEY)
-  OPENAI_API_KEY=sk-... python build_index.py --codebase-path /path/to/code
+  # Use Ollama embeddings (default — requires local Ollama server and model)
+  python build_index.py --codebase-path /path/to/code --index-name myproject
 
-  # Use mock embeddings for testing (no API key needed)
+  # Use mock embeddings for testing (no external dependencies)
   python build_index.py --codebase-path /path/to/code --embedding-provider mock
-
-    # Use Ollama embeddings (requires local Ollama server and model)
-    python build_index.py --codebase-path /path/to/code --embedding-provider ollama --model nomic-embed-text
         """,
     )
 
@@ -70,14 +67,14 @@ Examples:
     )
     parser.add_argument(
         "--embedding-provider",
-        choices=["openai", "mock", "ollama"],
-        default="openai",
-        help="Embedding provider (default: openai)",
+        choices=["ollama", "mock"],
+        default="ollama",
+        help="Embedding provider (default: ollama)",
     )
     parser.add_argument(
         "--model",
-        default="text-embedding-3-small",
-        help="Embedding model (OpenAI: text-embedding-3-small, Ollama: nomic-embed-text)",
+        default="nomic-embed-text",
+        help="Embedding model (default: nomic-embed-text)",
     )
     parser.add_argument(
         "--exclude",

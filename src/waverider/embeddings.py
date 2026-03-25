@@ -2,8 +2,7 @@
 Embedding generation for code snippets.
 """
 
-import os
-from typing import List, Optional
+from typing import List
 from abc import ABC, abstractmethod
 
 
@@ -19,53 +18,6 @@ class EmbeddingProvider(ABC):
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for multiple texts."""
         pass
-
-
-class OpenAIEmbeddings(EmbeddingProvider):
-    """OpenAI's embedding provider."""
-
-    def __init__(self, model: str = "text-embedding-3-small", api_key: Optional[str] = None):
-        """Initialize OpenAI embeddings.
-
-        Args:
-            model: Model to use (text-embedding-3-small or text-embedding-3-large)
-            api_key: OpenAI API key (uses OPENAI_API_KEY env var if not provided)
-        """
-        self.model = model
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-
-        if not self.api_key:
-            raise ValueError(
-                "OpenAI API key not found. "
-                "Set OPENAI_API_KEY environment variable or pass api_key parameter."
-            )
-
-        try:
-            import openai
-
-            self.client = openai.OpenAI(api_key=self.api_key)
-        except ImportError:
-            raise ImportError("openai package not found. Install with: pip install openai")
-
-    def embed(self, text: str) -> List[float]:
-        """Generate embedding for text."""
-        response = self.client.embeddings.create(model=self.model, input=text)
-        return response.data[0].embedding
-
-    def embed_batch(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
-        """Generate embeddings for multiple texts."""
-        embeddings = []
-
-        # Process in batches to avoid rate limits
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            response = self.client.embeddings.create(model=self.model, input=batch)
-
-            # Sort by index to maintain order
-            batch_embeddings = sorted(response.data, key=lambda x: x.index)
-            embeddings.extend([item.embedding for item in batch_embeddings])
-
-        return embeddings
 
 
 class OllamaEmbeddings(EmbeddingProvider):
@@ -98,9 +50,9 @@ class OllamaEmbeddings(EmbeddingProvider):
 
 
 class MockEmbeddings(EmbeddingProvider):
-    """Mock embeddings provider for testing (generates random vectors)."""
+    """Mock embeddings provider for testing (generates deterministic vectors)."""
 
-    def __init__(self, dimension: int = 1536):
+    def __init__(self, dimension: int = 768):
         """Initialize mock embeddings.
 
         Args:
@@ -122,20 +74,18 @@ class MockEmbeddings(EmbeddingProvider):
 
 
 def get_embedding_provider(
-    provider: str = "openai", model: str = "text-embedding-3-small"
+    provider: str = "ollama", model: str = "nomic-embed-text"
 ) -> EmbeddingProvider:
     """Get embedding provider instance.
 
     Args:
-        provider: Provider name ("openai", "ollama", or "mock")
-        model: Model name (OpenAI model or Ollama model)
+        provider: Provider name ("ollama" or "mock")
+        model: Ollama model name
 
     Returns:
         EmbeddingProvider instance
     """
-    if provider == "openai":
-        return OpenAIEmbeddings(model=model)
-    elif provider == "ollama":
+    if provider == "ollama":
         return OllamaEmbeddings(model=model)
     elif provider == "mock":
         return MockEmbeddings()

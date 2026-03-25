@@ -4,7 +4,7 @@ An **MCP (Model Context Protocol) server** for building vector indices and knowl
 
 ## Features
 
-- **Vector Indexing**: Extract code snippets (functions, classes, imports) and generate embeddings using OpenAI or other providers
+- **Vector Indexing**: Extract code snippets (functions, classes, imports, module constants) and generate embeddings using Ollama (local)
 - **SQLite Storage**: Lightweight, file-based database for storing code metadata and embeddings
 - **Neo4j Knowledge Graph**: Optional knowledge graph to model code structure, relationships, and dependencies
 - **MCP Server Interface**: Expose indices through the Model Context Protocol for seamless AI integration
@@ -28,7 +28,7 @@ An **MCP (Model Context Protocol) server** for building vector indices and knowl
 
 3. **Build an index**:
    ```bash
-   # Using OpenAI embeddings (requires OPENAI_API_KEY)
+   # Using Ollama embeddings (default — requires local Ollama with nomic-embed-text)
    python scripts/build_index.py --codebase-path /path/to/code --index-name my-project
 
    # Or using mock embeddings for testing
@@ -95,7 +95,7 @@ project waverider/
 - **Python 3.14+** - Core language
 - **SQLite** - File-based vector database
 - **Neo4j** - Optional knowledge graph database
-- **OpenAI API** - Embedding generation (configurable)
+- **Ollama** - Local embedding generation (nomic-embed-text)
 - **AST Parsing** - Code structure analysis
 
 ## Setup Guides
@@ -140,9 +140,6 @@ print(f"Total snippets: {stats['total_snippets']}")
 Create a `.env` file in the project root:
 
 ```
-# OpenAI API
-OPENAI_API_KEY=sk-...
-
 # Neo4j (if using)
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j

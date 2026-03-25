@@ -153,8 +153,9 @@ class CodebaseIndexer:
                 )
 
             elif isinstance(node, ast.ClassDef):
-                # Extract a compact class snippet: declaration (+ decorators) and optional docstring.
-                # Method bodies are embedded separately from FunctionDef nodes.
+                # Extract a compact class snippet: declaration (+ decorators), optional docstring,
+                # and a summary of method signatures to give agents a "table of contents".
+                # Full method bodies are indexed separately from FunctionDef nodes.
                 decorator_start_line = min((d.lineno for d in node.decorator_list), default=node.lineno)
                 first_body_line = node.body[0].lineno if node.body else node.lineno + 1
 
@@ -174,9 +175,18 @@ class CodebaseIndexer:
                         docstring_lines = lines[doc_start - 1 : doc_end]
                         snippet_end_line = doc_end
 
+                # Collect method signatures (one-liner per method)
+                method_sigs: List[str] = []
+                for child in node.body:
+                    if isinstance(child, ast.FunctionDef):
+                        sig_line = lines[child.lineno - 1].rstrip()
+                        method_sigs.append(f"    {sig_line.strip()}")
+
                 class_parts = ["\n".join(header_lines)]
                 if docstring_lines:
                     class_parts.append("\n".join(docstring_lines))
+                if method_sigs:
+                    class_parts.append("    # Methods:\n" + "\n".join(method_sigs))
                 class_content = "\n\n".join(part for part in class_parts if part)
 
                 snippets.append(
@@ -202,6 +212,39 @@ class CodebaseIndexer:
                         snippet_type="import",
                         name=import_name,
                         content=import_content,
+                        start_line=node.lineno,
+                        end_line=end_line,
+                        language="python",
+                    )
+                )
+
+        # Extract module-level assignments (constants, configuration)
+        for node in tree.body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                start_line = node.lineno - 1
+                end_line = node.end_lineno or node.lineno
+                assign_content = "\n".join(lines[start_line:end_line])
+
+                # Derive a name from the assignment target(s)
+                if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                    assign_name = node.target.id
+                elif isinstance(node, ast.Assign) and node.targets:
+                    target = node.targets[0]
+                    if isinstance(target, ast.Name):
+                        assign_name = target.id
+                    elif isinstance(target, ast.Tuple):
+                        names = [elt.id for elt in target.elts if isinstance(elt, ast.Name)]
+                        assign_name = ", ".join(names) if names else file_path.stem
+                    else:
+                        assign_name = file_path.stem
+                else:
+                    assign_name = file_path.stem
+
+                snippets.append(
+                    CodeSnippetInfo(
+                        snippet_type="module_constant",
+                        name=assign_name,
+                        content=assign_content,
                         start_line=node.lineno,
                         end_line=end_line,
                         language="python",

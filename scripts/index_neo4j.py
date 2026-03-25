@@ -96,19 +96,40 @@ def main() -> int:
 
         for snippet in snippets:
             if snippet.snippet_type == "function":
+                # Extract signature (first line) and docstring from content
+                snippet_lines = snippet.content.splitlines()
+                signature = snippet_lines[0][:200] if snippet_lines else snippet.name
+                docstring = ""
+                if language == "python":
+                    import ast as _ast
+                    try:
+                        _node = _ast.parse(snippet.content).body[0]
+                        docstring = _ast.get_docstring(_node) or ""
+                    except Exception:
+                        pass
                 neo4j.add_function(
                     file_path=relative_path,
                     function_name=snippet.name,
                     language=language,
-                    signature=snippet.content.splitlines()[0][:200],
+                    signature=signature,
+                    docstring=docstring[:500],
                 )
                 file_funcs += 1
                 total_functions += 1
             elif snippet.snippet_type == "class":
+                docstring = ""
+                if language == "python":
+                    import ast as _ast
+                    try:
+                        _node = _ast.parse(snippet.content).body[0]
+                        docstring = _ast.get_docstring(_node) or ""
+                    except Exception:
+                        pass
                 neo4j.add_class(
                     file_path=relative_path,
                     class_name=snippet.name,
                     language=language,
+                    docstring=docstring[:500],
                 )
                 file_classes += 1
                 total_classes += 1

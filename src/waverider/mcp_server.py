@@ -1,5 +1,6 @@
 """MCP server for Waverider - exposes codebase knowledge graph as MCP tools."""
 
+import json
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -44,8 +45,8 @@ def search_codebase(query: str, codebase_name: str = "waverider", limit: int = 1
                OR any(cl IN classes WHERE toLower(cl.name) CONTAINS toLower($term))
             RETURN
               f.path AS file,
-              [fn IN funcs WHERE toLower(fn.name) CONTAINS toLower($term) | fn.name] AS matched_functions,
-              [cl IN classes WHERE toLower(cl.name) CONTAINS toLower($term) | cl.name] AS matched_classes,
+              [fn IN funcs WHERE toLower(fn.name) CONTAINS toLower($term) | {name: fn.name, signature: fn.signature, docstring: fn.docstring}] AS matched_functions,
+              [cl IN classes WHERE toLower(cl.name) CONTAINS toLower($term) | {name: cl.name, docstring: cl.docstring}] AS matched_classes,
               [fn IN funcs | fn.name] AS all_functions,
               [cl IN classes | cl.name] AS all_classes
             LIMIT $limit
@@ -61,9 +62,20 @@ def search_codebase(query: str, codebase_name: str = "waverider", limit: int = 1
         for r in results:
             lines.append(f"\n  File: {r['file']}")
             if r["matched_functions"]:
-                lines.append(f"    Matching functions: {', '.join(r['matched_functions'])}")
+                lines.append("    Matching functions:")
+                for fn in r["matched_functions"]:
+                    sig = fn.get("signature") or fn["name"]
+                    lines.append(f"      - {sig}")
+                    doc = fn.get("docstring")
+                    if doc:
+                        lines.append(f"        {doc}")
             if r["matched_classes"]:
-                lines.append(f"    Matching classes: {', '.join(r['matched_classes'])}")
+                lines.append("    Matching classes:")
+                for cl in r["matched_classes"]:
+                    lines.append(f"      - {cl['name']}")
+                    doc = cl.get("docstring")
+                    if doc:
+                        lines.append(f"        {doc}")
             lines.append(f"    All functions: {', '.join(r['all_functions']) or '(none)'}")
             lines.append(f"    All classes:   {', '.join(r['all_classes']) or '(none)'}")
         return "\n".join(lines)
@@ -96,14 +108,24 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
                 "--codebase-path ./src --index-name waverider"
             )
 
+        # Auto-detect embedding provider from index metadata to match what was used at index time.
+        metadata_path = Path("indices") / f"{codebase_name}_metadata.json"
+        provider_name = "ollama"
+        model_name = "nomic-embed-text"
+        if metadata_path.exists():
+            with open(metadata_path) as mf:
+                meta = json.load(mf)
+            provider_name = meta.get("embedding_provider", "ollama")
+            model_name = meta.get("embedding_model", "nomic-embed-text")
+
         provider_note = ""
         try:
-            embeddings = get_embedding_provider(provider="openai")
+            embeddings = get_embedding_provider(provider=provider_name, model=model_name)
             query_vec = embeddings.embed(query)
         except Exception:
             embeddings = get_embedding_provider(provider="mock")
             query_vec = embeddings.embed(query)
-            provider_note = " [mock embeddings — set a valid OPENAI_API_KEY and rebuild for real semantic search]"
+            provider_note = " [mock embeddings — install and start Ollama for real semantic search]"
 
         results = db.search_embeddings(
             query_embedding=query_vec,
@@ -114,7 +136,7 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
         if not results:
             return f"No snippets found for '{query}'. The index may be empty — run build_index.py."
 
-        provider_note = " [mock embeddings — add OPENAI_API_KEY and rebuild for real semantic search]" if provider_note else ""
+        provider_note = " [mock embeddings — install and start Ollama for real semantic search]" if provider_note else ""
         lines = [f"Top {len(results)} snippet(s) for '{query}'{provider_note}:"]
         for r in results:
             lines.append(f"\n--- {r['file_path']} ({r['snippet_type']}: {r['name']}) similarity={r['similarity']} ---")
