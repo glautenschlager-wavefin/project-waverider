@@ -133,37 +133,40 @@ class DatabaseManager:
             Codebase ID
         """
         conn = self.connect()
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        cursor.execute(
-            """
-            INSERT INTO codebase_metadata (name, path, description, language, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(name) DO UPDATE SET
-                path = excluded.path,
-                description = excluded.description,
-                language = excluded.language,
-                updated_at = CURRENT_TIMESTAMP
-        """,
-            (name, path, description, language),
-        )
+            cursor.execute(
+                """
+                INSERT INTO codebase_metadata (name, path, description, language, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(name) DO UPDATE SET
+                    path = excluded.path,
+                    description = excluded.description,
+                    language = excluded.language,
+                    updated_at = CURRENT_TIMESTAMP
+            """,
+                (name, path, description, language),
+            )
 
-        cursor.execute("SELECT id FROM codebase_metadata WHERE name = ?", (name,))
-        row = cursor.fetchone()
-        if row is None:
+            cursor.execute("SELECT id FROM codebase_metadata WHERE name = ?", (name,))
+            row = cursor.fetchone()
+            if row is None:
+                raise RuntimeError(f"Failed to create or retrieve codebase: {name}")
+
+            codebase_id = int(row["id"])
+            conn.commit()
+            return codebase_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
             conn.close()
-            raise RuntimeError(f"Failed to create or retrieve codebase: {name}")
-
-        codebase_id = int(row["id"])
-        conn.commit()
-        conn.close()
-
-        return codebase_id
 
     def add_source_file(
         self, codebase_id: int, file_path: str, relative_path: str, content_hash: str
     ) -> int:
-        """Add a source file to the database.
+        """Add or update a source file and return its ID.
 
         Args:
             codebase_id: ID of the parent codebase
@@ -175,23 +178,46 @@ class DatabaseManager:
             File ID
         """
         conn = self.connect()
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        file_size = Path(file_path).stat().st_size if Path(file_path).exists() else 0
+            file_size = Path(file_path).stat().st_size if Path(file_path).exists() else 0
 
-        cursor.execute(
-            """
-            INSERT INTO source_files (codebase_id, file_path, relative_path, content_hash, file_size)
-            VALUES (?, ?, ?, ?, ?)
-        """,
-            (codebase_id, file_path, relative_path, content_hash, file_size),
-        )
+            cursor.execute(
+                """
+                INSERT INTO source_files (
+                    codebase_id, file_path, relative_path, content_hash, file_size, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(codebase_id, file_path) DO UPDATE SET
+                    relative_path = excluded.relative_path,
+                    content_hash = excluded.content_hash,
+                    file_size = excluded.file_size,
+                    updated_at = CURRENT_TIMESTAMP
+            """,
+                (codebase_id, file_path, relative_path, content_hash, file_size),
+            )
 
-        file_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
+            cursor.execute(
+                """
+                SELECT id
+                FROM source_files
+                WHERE codebase_id = ? AND file_path = ?
+            """,
+                (codebase_id, file_path),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise RuntimeError(f"Failed to create or retrieve source file: {file_path}")
 
-        return file_id
+            file_id = int(row["id"])
+            conn.commit()
+            return file_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def add_code_snippet(
         self,
@@ -218,21 +244,25 @@ class DatabaseManager:
             Snippet ID
         """
         conn = self.connect()
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        cursor.execute(
-            """
-            INSERT INTO code_snippets (file_id, snippet_type, name, start_line, end_line, content, language)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-            (file_id, snippet_type, name, start_line, end_line, content, language),
-        )
+            cursor.execute(
+                """
+                INSERT INTO code_snippets (file_id, snippet_type, name, start_line, end_line, content, language)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+                (file_id, snippet_type, name, start_line, end_line, content, language),
+            )
 
-        snippet_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-
-        return snippet_id
+            snippet_id = cursor.lastrowid
+            conn.commit()
+            return snippet_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def add_embedding(
         self, snippet_id: int, embedding: List[float], model: str = "text-embedding-3-small"
@@ -248,25 +278,29 @@ class DatabaseManager:
             Embedding ID
         """
         conn = self.connect()
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        # Store embedding as JSON string
-        embedding_str = json.dumps(embedding)
-        dimensions = len(embedding)
+            # Store embedding as JSON string
+            embedding_str = json.dumps(embedding)
+            dimensions = len(embedding)
 
-        cursor.execute(
-            """
-            INSERT INTO embeddings (snippet_id, model, embedding_vector, embedding_dimensions)
-            VALUES (?, ?, ?, ?)
-        """,
-            (snippet_id, model, embedding_str, dimensions),
-        )
+            cursor.execute(
+                """
+                INSERT INTO embeddings (snippet_id, model, embedding_vector, embedding_dimensions)
+                VALUES (?, ?, ?, ?)
+            """,
+                (snippet_id, model, embedding_str, dimensions),
+            )
 
-        embedding_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-
-        return embedding_id
+            embedding_id = cursor.lastrowid
+            conn.commit()
+            return embedding_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def get_codebase(self, name: str) -> Optional[Dict[str, Any]]:
         """Get codebase by name."""
@@ -289,6 +323,59 @@ class DatabaseManager:
         conn.close()
 
         return [dict(row) for row in rows]
+
+    def reset_codebase_contents(self, codebase_id: int) -> None:
+        """Delete all indexed files, snippets, and embeddings for a codebase.
+
+        Keeps the codebase_metadata record so index rebuilds are idempotent
+        for a stable codebase name.
+
+        Args:
+            codebase_id: ID of the codebase to reset
+        """
+        conn = self.connect()
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """
+                DELETE FROM embeddings
+                WHERE snippet_id IN (
+                    SELECT cs.id
+                    FROM code_snippets cs
+                    JOIN source_files sf ON cs.file_id = sf.id
+                    WHERE sf.codebase_id = ?
+                )
+            """,
+                (codebase_id,),
+            )
+
+            cursor.execute(
+                """
+                DELETE FROM code_snippets
+                WHERE file_id IN (
+                    SELECT id
+                    FROM source_files
+                    WHERE codebase_id = ?
+                )
+            """,
+                (codebase_id,),
+            )
+
+            cursor.execute(
+                """
+                DELETE FROM source_files
+                WHERE codebase_id = ?
+            """,
+                (codebase_id,),
+            )
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def search_embeddings(
         self,

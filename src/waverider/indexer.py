@@ -153,18 +153,39 @@ class CodebaseIndexer:
                 )
 
             elif isinstance(node, ast.ClassDef):
-                # Extract class
-                start_line = node.lineno - 1
-                end_line = node.end_lineno or node.lineno
-                class_content = "\n".join(lines[start_line:end_line])
+                # Extract a compact class snippet: declaration (+ decorators) and optional docstring.
+                # Method bodies are embedded separately from FunctionDef nodes.
+                decorator_start_line = min((d.lineno for d in node.decorator_list), default=node.lineno)
+                first_body_line = node.body[0].lineno if node.body else node.lineno + 1
+
+                header_start_idx = decorator_start_line - 1
+                header_end_exclusive = max(header_start_idx + 1, first_body_line - 1)
+                header_lines = lines[header_start_idx:header_end_exclusive]
+
+                snippet_start_line = decorator_start_line
+                snippet_end_line = header_end_exclusive
+
+                docstring_lines: List[str] = []
+                if node.body and isinstance(node.body[0], ast.Expr):
+                    doc_expr = node.body[0].value
+                    if isinstance(doc_expr, ast.Constant) and isinstance(doc_expr.value, str):
+                        doc_start = node.body[0].lineno
+                        doc_end = node.body[0].end_lineno or doc_start
+                        docstring_lines = lines[doc_start - 1 : doc_end]
+                        snippet_end_line = doc_end
+
+                class_parts = ["\n".join(header_lines)]
+                if docstring_lines:
+                    class_parts.append("\n".join(docstring_lines))
+                class_content = "\n\n".join(part for part in class_parts if part)
 
                 snippets.append(
                     CodeSnippetInfo(
                         snippet_type="class",
                         name=node.name,
                         content=class_content,
-                        start_line=node.lineno,
-                        end_line=end_line,
+                        start_line=snippet_start_line,
+                        end_line=snippet_end_line,
                         language="python",
                     )
                 )
@@ -257,6 +278,9 @@ class CodebaseIndexer:
         codebase_id = self.db.add_codebase(
             name=codebase_name, path=codebase_path, description=description
         )
+
+        # Full rebuild semantics: clear previous index rows for this codebase.
+        self.db.reset_codebase_contents(codebase_id)
 
         print(f"Indexing codebase: {codebase_name}")
         print(f"Path: {codebase_path}")
