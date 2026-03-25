@@ -250,7 +250,7 @@ class Neo4jGraphManager:
             List of result records
         """
         with self.driver.session() as session:
-            result = session.run(cypher, **params)
+            result = session.run(cypher, params)
             return [dict(record) for record in result]
 
     def get_function_dependency_graph(self, codebase_name: str) -> List[Dict[str, Any]]:
