@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "waverider": {
+      "command": "poetry",
+      "args": ["run", "python", "-m", "waverider.mcp_server"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}

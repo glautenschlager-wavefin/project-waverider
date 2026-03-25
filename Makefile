@@ -1,4 +1,4 @@
-.PHONY: help install format lint lint-fix type-check test all-checks neo4j-start neo4j-stop neo4j-restart neo4j-status neo4j-console clean
+.PHONY: help install format lint lint-fix type-check test all-checks neo4j-start neo4j-stop neo4j-restart neo4j-status neo4j-console mcp-start shell index-ollama clean
 
 help:
 	@echo "Waverider Development Commands"
@@ -15,6 +15,9 @@ help:
 	@echo "make neo4j-restart   Restart Neo4j Homebrew service"
 	@echo "make neo4j-status    Show Neo4j Homebrew service status"
 	@echo "make neo4j-console   Run Neo4j in the foreground"
+	@echo "make mcp-start       Start the Waverider MCP server (stdio)"
+	@echo "make shell           Start a Python shell (poetry env)"
+	@echo "make index           Build index with Ollama (the default) embeddings"
 	@echo "make clean           Remove cache and temporary files"
 
 install:
@@ -52,6 +55,15 @@ neo4j-status:
 
 neo4j-console:
 	/opt/homebrew/opt/neo4j/bin/neo4j console
+
+mcp-start:
+	poetry run python -m waverider.mcp_server
+
+shell:
+	poetry run python
+
+index:
+	poetry run python scripts/build_index.py --codebase-path ./ --index-name waverider --embedding-provider ollama --model nomic-embed-text
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

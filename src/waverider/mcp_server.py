@@ -1,82 +1,143 @@
-"""
-MCP server for Waverider - exposes vector indices as a Model Context Protocol server.
-"""
+"""MCP server for Waverider - exposes codebase knowledge graph as MCP tools."""
 
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+
+from dotenv import load_dotenv
+from mcp.server.fastmcp import FastMCP
 
 
-class MCPServer:
-    """MCP server implementation for Waverider."""
+def _load_project_env() -> None:
+    current_file = Path(__file__).resolve()
+    project_root = current_file.parents[2]
+    load_dotenv(project_root / ".env", override=False)
+    load_dotenv(override=False)
 
-    def __init__(self, db_manager, neo4j_manager=None):
-        """Initialize MCP server.
 
-        Args:
-            db_manager: DatabaseManager instance
-            neo4j_manager: Neo4jGraphManager instance (optional)
-        """
-        self.db = db_manager
-        self.neo4j = neo4j_manager
+_load_project_env()
 
-    def search_codebase(self, query: str, codebase_name: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Search for code snippets similar to query.
+mcp = FastMCP("waverider")
 
-        This would be called through the MCP protocol by LLMs.
 
-        Args:
-            query: Natural language query or code snippet
-            codebase_name: Codebase to search
-            limit: Number of results
+@mcp.tool()
+def search_codebase(query: str, codebase_name: str = "waverider", limit: int = 10) -> str:
+    """Search the Waverider codebase knowledge graph for functions, classes, and files matching a query.
 
-        Returns:
-            List of relevant code snippets
-        """
-        # In a real implementation, this would:
-        # 1. Generate embedding for the query
-        # 2. Search SQLite for similar embeddings
-        # 3. Return ranked results with context
-        pass
+    Args:
+        query: Keyword or name to search for (e.g. function name, class name, file name)
+        codebase_name: Name of the indexed codebase (default: waverider)
+        limit: Maximum number of results to return
+    """
+    try:
+        from waverider.neo4j_graph import Neo4jGraphManager
 
-    def get_function_context(self, function_name: str, codebase_name: str) -> Dict[str, Any]:
-        """Get context for a specific function.
+        neo4j = Neo4jGraphManager()
+        results = neo4j.query(
+            """
+            MATCH (cb:Codebase {name: $codebase_name})-[:CONTAINS_FILE]->(f:CodeFile)
+            WITH f
+            OPTIONAL MATCH (f)-[:CONTAINS_FUNCTION]->(fn:Function)
+            WITH f, collect(DISTINCT fn) AS funcs
+            OPTIONAL MATCH (f)-[:CONTAINS_CLASS]->(cl:Class)
+            WITH f, funcs, collect(DISTINCT cl) AS classes
+            WHERE toLower(f.path) CONTAINS toLower($term)
+               OR any(fn IN funcs WHERE toLower(fn.name) CONTAINS toLower($term))
+               OR any(cl IN classes WHERE toLower(cl.name) CONTAINS toLower($term))
+            RETURN
+              f.path AS file,
+              [fn IN funcs WHERE toLower(fn.name) CONTAINS toLower($term) | fn.name] AS matched_functions,
+              [cl IN classes WHERE toLower(cl.name) CONTAINS toLower($term) | cl.name] AS matched_classes,
+              [fn IN funcs | fn.name] AS all_functions,
+              [cl IN classes | cl.name] AS all_classes
+            LIMIT $limit
+            """,
+            term=query,
+            limit=limit,
+            codebase_name=codebase_name,
+        )
+        neo4j.close()
+        if not results:
+            return f"No results found for '{query}' in codebase '{codebase_name}'."
+        lines = [f"Found {len(results)} file(s) matching '{query}':"]
+        for r in results:
+            lines.append(f"\n  File: {r['file']}")
+            if r["matched_functions"]:
+                lines.append(f"    Matching functions: {', '.join(r['matched_functions'])}")
+            if r["matched_classes"]:
+                lines.append(f"    Matching classes: {', '.join(r['matched_classes'])}")
+            lines.append(f"    All functions: {', '.join(r['all_functions']) or '(none)'}")
+            lines.append(f"    All classes:   {', '.join(r['all_classes']) or '(none)'}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Search error: {e}"
 
-        Args:
-            function_name: Name of function
-            codebase_name: Codebase to search
 
-        Returns:
-            Function context including calls, callers, definition
-        """
-        # In a real implementation, this would query Neo4j for:
-        # - Function definition
-        # - What it calls
-        # - What calls it
-        # - Dependencies
-        pass
+@mcp.tool()
+def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) -> str:
+    """Semantically retrieve the most relevant code snippets for a natural-language query.
 
-    def get_file_summary(self, file_path: str, codebase_name: str) -> Dict[str, Any]:
-        """Get summary of a file's contents.
+    Uses vector embeddings to find snippets by meaning, not just keyword matching.
+    Requires the codebase to be indexed with `scripts/build_index.py`.
 
-        Args:
-            file_path: Path to file
-            codebase_name: Codebase to search
+    Args:
+        query: Natural-language description of what you're looking for
+        codebase_name: Name of the indexed codebase (default: waverider)
+        limit: Number of snippets to return (default: 5)
+    """
+    try:
+        from waverider.database import DatabaseManager
+        from waverider.embeddings import get_embedding_provider
 
-        Returns:
-            File summary with main entities
-        """
-        pass
+        db = DatabaseManager(db_path="data/waverider.db")
+        codebase = db.get_codebase(codebase_name)
+        if not codebase:
+            return (
+                f"Codebase '{codebase_name}' not found in vector index. "
+                "Run: poetry run python scripts/build_index.py "
+                "--codebase-path ./src --index-name waverider"
+            )
 
-    def analyze_dependency_graph(self, codebase_name: str) -> Dict[str, Any]:
-        """Analyze dependency graph for a codebase.
+        provider_note = ""
+        try:
+            embeddings = get_embedding_provider(provider="openai")
+            query_vec = embeddings.embed(query)
+        except Exception:
+            embeddings = get_embedding_provider(provider="mock")
+            query_vec = embeddings.embed(query)
+            provider_note = " [mock embeddings — set a valid OPENAI_API_KEY and rebuild for real semantic search]"
 
-        Args:
-            codebase_name: Codebase to analyze
+        results = db.search_embeddings(
+            query_embedding=query_vec,
+            codebase_id=codebase["id"],
+            limit=limit,
+        )
 
-        Returns:
-            Dependency analysis results
-        """
-        # This would use Neo4j to analyze:
-        # - Circular dependencies
-        # - Most depended-on modules
-        # - Dependency chains
-        pass
+        if not results:
+            return f"No snippets found for '{query}'. The index may be empty — run build_index.py."
+
+        provider_note = " [mock embeddings — add OPENAI_API_KEY and rebuild for real semantic search]" if provider_note else ""
+        lines = [f"Top {len(results)} snippet(s) for '{query}'{provider_note}:"]
+        for r in results:
+            lines.append(f"\n--- {r['file_path']} ({r['snippet_type']}: {r['name']}) similarity={r['similarity']} ---")
+            lines.append(r["content"])
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Retrieval error: {e}"
+
+
+
+    """Check Neo4j connectivity and return basic graph statistics."""
+    try:
+        from waverider.neo4j_graph import Neo4jGraphManager
+
+        neo4j = Neo4jGraphManager()
+        result = neo4j.query("MATCH (n) RETURN COUNT(n) AS node_count")
+        count = result[0]["node_count"] if result else 0
+        neo4j.close()
+        return f"Neo4j connected. Total nodes in graph: {count}"
+    except Exception as e:
+        return f"Neo4j unavailable: {e}"
+
+
+if __name__ == "__main__":
+    mcp.run()

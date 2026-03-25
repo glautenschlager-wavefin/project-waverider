@@ -218,6 +218,8 @@ class CodebaseIndexer:
             return self.extract_python_snippets(file_path, content)
 
         # For non-Python files, return file as single snippet
+        # TODO: we want to support at least Javascript/TypeScript, and Ruby. 
+        # Possibly HTML and CSS as well.
         lines = content.split("\n")
         return [
             CodeSnippetInfo(

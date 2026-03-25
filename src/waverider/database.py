@@ -121,7 +121,7 @@ class DatabaseManager:
     def add_codebase(
         self, name: str, path: str, description: str = "", language: str = "mixed"
     ) -> int:
-        """Add a new codebase to track.
+        """Add or update a codebase record and return its ID.
 
         Args:
             name: Unique codebase identifier
@@ -137,13 +137,24 @@ class DatabaseManager:
 
         cursor.execute(
             """
-            INSERT INTO codebase_metadata (name, path, description, language)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO codebase_metadata (name, path, description, language, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(name) DO UPDATE SET
+                path = excluded.path,
+                description = excluded.description,
+                language = excluded.language,
+                updated_at = CURRENT_TIMESTAMP
         """,
             (name, path, description, language),
         )
 
-        codebase_id = cursor.lastrowid
+        cursor.execute("SELECT id FROM codebase_metadata WHERE name = ?", (name,))
+        row = cursor.fetchone()
+        if row is None:
+            conn.close()
+            raise RuntimeError(f"Failed to create or retrieve codebase: {name}")
+
+        codebase_id = int(row["id"])
         conn.commit()
         conn.close()
 
@@ -284,42 +295,48 @@ class DatabaseManager:
         query_embedding: List[float],
         codebase_id: int,
         limit: int = 10,
-        threshold: float = 0.7,
+        threshold: float = 0.0,
     ) -> List[Dict[str, Any]]:
-        """Search for similar code snippets using cosine similarity.
+        """Return the top-k snippets most similar to query_embedding (cosine similarity)."""
+        import math
 
-        Note: This is a placeholder. For production, use specialized vector DB or
-        implement approximate nearest neighbors.
-
-        Args:
-            query_embedding: Query vector
-            codebase_id: Filter by codebase
-            limit: Number of results
-            threshold: Similarity threshold
-
-        Returns:
-            List of similar snippets
-        """
         conn = self.connect()
         cursor = conn.cursor()
-
-        # This is a simplified search - in production, use FAISS, Pinecone, etc.
         cursor.execute(
             """
-            SELECT cs.id, cs.name, cs.snippet_type, cs.content, e.embedding_vector
+            SELECT cs.id, cs.name, cs.snippet_type, cs.content,
+                   sf.relative_path AS file_path,
+                   cs.start_line, cs.end_line, cs.language,
+                   e.embedding_vector
             FROM code_snippets cs
             JOIN source_files sf ON cs.file_id = sf.id
             JOIN embeddings e ON cs.id = e.snippet_id
             WHERE sf.codebase_id = ?
-            LIMIT ?
-        """,
-            (codebase_id, limit),
+            """,
+            (codebase_id,),
         )
-
-        results = cursor.fetchall()
+        rows = cursor.fetchall()
         conn.close()
 
-        return [dict(row) for row in results]
+        q = query_embedding
+        q_norm = math.sqrt(sum(x * x for x in q))
+        if q_norm == 0:
+            return []
+
+        scored: List[Tuple[float, Dict[str, Any]]] = []
+        for row in rows:
+            d = dict(row)
+            vec = json.loads(d.pop("embedding_vector"))
+            v_norm = math.sqrt(sum(x * x for x in vec))
+            if v_norm == 0:
+                continue
+            similarity = sum(a * b for a, b in zip(q, vec)) / (q_norm * v_norm)
+            if similarity >= threshold:
+                d["similarity"] = round(similarity, 4)
+                scored.append((similarity, d))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [d for _, d in scored[:limit]]
 
     def get_statistics(self, codebase_id: int) -> Dict[str, Any]:
         """Get statistics for a codebase."""

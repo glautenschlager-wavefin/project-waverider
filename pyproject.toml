@@ -24,6 +24,7 @@ neo4j = "^5.28.1"
 openai = "^1.72.0"
 numpy = "^2.2.4"
 mcp = "^1.26.0"
+ollama = "^0.6.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.5"

@@ -36,6 +36,9 @@ Examples:
 
   # Use mock embeddings for testing (no API key needed)
   python build_index.py --codebase-path /path/to/code --embedding-provider mock
+
+    # Use Ollama embeddings (requires local Ollama server and model)
+    python build_index.py --codebase-path /path/to/code --embedding-provider ollama --model nomic-embed-text
         """,
     )
 
@@ -67,14 +70,14 @@ Examples:
     )
     parser.add_argument(
         "--embedding-provider",
-        choices=["openai", "mock"],
+        choices=["openai", "mock", "ollama"],
         default="openai",
         help="Embedding provider (default: openai)",
     )
     parser.add_argument(
         "--model",
         default="text-embedding-3-small",
-        help="Embedding model (default: text-embedding-3-small)",
+        help="Embedding model (OpenAI: text-embedding-3-small, Ollama: nomic-embed-text)",
     )
     parser.add_argument(
         "--exclude",
@@ -111,7 +114,8 @@ Examples:
     print(f"Using embedding provider: {args.embedding_provider}")
     try:
         embeddings = get_embedding_provider(
-            provider=args.embedding_provider, model=args.model
+            provider=args.embedding_provider,
+            model=args.model,
         )
     except Exception as e:
         print(f"✗ Error initializing embedding provider: {e}")

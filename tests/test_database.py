@@ -60,3 +60,18 @@ def test_list_codebases(temp_db):
 
     codebases = temp_db.list_codebases()
     assert len(codebases) == 2
+
+
+def test_add_codebase_is_idempotent(temp_db):
+    """Repeated add_codebase calls for the same name should update and reuse the same ID."""
+    temp_db.init_schema()
+
+    first_id = temp_db.add_codebase(name="project", path="/path/old", description="old")
+    second_id = temp_db.add_codebase(name="project", path="/path/new", description="new")
+
+    assert first_id == second_id
+
+    codebase = temp_db.get_codebase("project")
+    assert codebase is not None
+    assert codebase["path"] == "/path/new"
+    assert codebase["description"] == "new"

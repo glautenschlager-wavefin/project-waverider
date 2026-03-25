@@ -68,6 +68,35 @@ class OpenAIEmbeddings(EmbeddingProvider):
         return embeddings
 
 
+class OllamaEmbeddings(EmbeddingProvider):
+    """Ollama's embedding provider."""
+
+    def __init__(self, model: str = "nomic-embed-text"):
+        """Initialize Ollama embeddings.
+
+        Args:
+            model: Ollama embedding model (default: nomic-embed-text)
+        """
+        self.model = model
+
+        try:
+            import ollama
+
+            self.client = ollama
+        except ImportError:
+            raise ImportError("ollama package not found. Install with: pip install ollama")
+
+    def embed(self, text: str) -> List[float]:
+        """Generate embedding for text."""
+        response = self.client.embeddings(model=self.model, prompt=text)
+        embedding = response["embedding"]
+        return embedding
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings for multiple texts."""
+        return [self.embed(text) for text in texts]
+
+
 class MockEmbeddings(EmbeddingProvider):
     """Mock embeddings provider for testing (generates random vectors)."""
 
@@ -98,14 +127,16 @@ def get_embedding_provider(
     """Get embedding provider instance.
 
     Args:
-        provider: Provider name ("openai" or "mock")
-        model: Model name (for OpenAI provider)
+        provider: Provider name ("openai", "ollama", or "mock")
+        model: Model name (OpenAI model or Ollama model)
 
     Returns:
         EmbeddingProvider instance
     """
     if provider == "openai":
         return OpenAIEmbeddings(model=model)
+    elif provider == "ollama":
+        return OllamaEmbeddings(model=model)
     elif provider == "mock":
         return MockEmbeddings()
     else:
