@@ -134,3 +134,4 @@ indices/
 *.db
 neo4j_data/
 .neo4jrc
+test_results/
