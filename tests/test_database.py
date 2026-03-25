@@ -164,3 +164,126 @@ def test_reset_codebase_contents(temp_db):
     assert stats2["total_files"] == 1
     assert stats2["total_snippets"] == 1
     assert stats2["total_embeddings"] == 1
+
+
+def test_delete_file_contents(temp_db):
+    """delete_file_contents should remove snippets/embeddings but keep the source_file row."""
+    temp_db.init_schema()
+
+    codebase_id = temp_db.add_codebase(name="project", path="/path/project")
+    file_id = temp_db.add_source_file(
+        codebase_id=codebase_id,
+        file_path="/path/project/a.py",
+        relative_path="a.py",
+        content_hash="aaa",
+    )
+    snippet_id = temp_db.add_code_snippet(
+        file_id=file_id,
+        snippet_type="function",
+        name="foo",
+        content="def foo(): pass",
+        start_line=1,
+        end_line=1,
+        language="python",
+    )
+    temp_db.add_embedding(snippet_id=snippet_id, embedding=[0.1, 0.2], model="mock")
+
+    temp_db.delete_file_contents(file_id)
+
+    stats = temp_db.get_statistics(codebase_id)
+    assert stats["total_files"] == 1  # source_file row still present
+    assert stats["total_snippets"] == 0
+    assert stats["total_embeddings"] == 0
+
+
+def test_delete_source_file(temp_db):
+    """delete_source_file should remove the file row and all its children."""
+    temp_db.init_schema()
+
+    codebase_id = temp_db.add_codebase(name="project", path="/path/project")
+    file_id = temp_db.add_source_file(
+        codebase_id=codebase_id,
+        file_path="/path/project/b.py",
+        relative_path="b.py",
+        content_hash="bbb",
+    )
+    snippet_id = temp_db.add_code_snippet(
+        file_id=file_id,
+        snippet_type="function",
+        name="bar",
+        content="def bar(): pass",
+        start_line=1,
+        end_line=1,
+        language="python",
+    )
+    temp_db.add_embedding(snippet_id=snippet_id, embedding=[0.5, 0.6], model="mock")
+
+    temp_db.delete_source_file(file_id)
+
+    stats = temp_db.get_statistics(codebase_id)
+    assert stats["total_files"] == 0
+    assert stats["total_snippets"] == 0
+    assert stats["total_embeddings"] == 0
+
+
+def test_get_file_hashes(temp_db):
+    """get_file_hashes should return a mapping of relative_path -> (file_id, hash)."""
+    temp_db.init_schema()
+
+    codebase_id = temp_db.add_codebase(name="project", path="/path/project")
+    fid1 = temp_db.add_source_file(
+        codebase_id=codebase_id,
+        file_path="/path/project/a.py",
+        relative_path="a.py",
+        content_hash="hash-a",
+    )
+    fid2 = temp_db.add_source_file(
+        codebase_id=codebase_id,
+        file_path="/path/project/b.py",
+        relative_path="b.py",
+        content_hash="hash-b",
+    )
+
+    hashes = temp_db.get_file_hashes(codebase_id)
+    assert hashes == {
+        "a.py": (fid1, "hash-a"),
+        "b.py": (fid2, "hash-b"),
+    }
+
+
+def test_vector_index_build_and_search(temp_db):
+    """Build a precomputed vector index and verify search returns correct snippets."""
+    temp_db.init_schema()
+
+    codebase_id = temp_db.add_codebase(name="project", path="/path/project")
+    file_id = temp_db.add_source_file(
+        codebase_id=codebase_id,
+        file_path="/path/project/main.py",
+        relative_path="main.py",
+        content_hash="h",
+    )
+
+    # Add two snippets with simple known embeddings
+    s1 = temp_db.add_code_snippet(
+        file_id=file_id, snippet_type="function", name="alpha",
+        content="def alpha(): ...", start_line=1, end_line=1, language="python",
+    )
+    temp_db.add_embedding(snippet_id=s1, embedding=[1.0, 0.0, 0.0], model="mock")
+
+    s2 = temp_db.add_code_snippet(
+        file_id=file_id, snippet_type="function", name="beta",
+        content="def beta(): ...", start_line=2, end_line=2, language="python",
+    )
+    temp_db.add_embedding(snippet_id=s2, embedding=[0.0, 1.0, 0.0], model="mock")
+
+    n = temp_db.build_vector_index(codebase_id)
+    assert n == 2
+
+    # Search for a vector close to alpha
+    results = temp_db.search_embeddings(
+        query_embedding=[1.0, 0.0, 0.0],
+        codebase_id=codebase_id,
+        limit=1,
+    )
+    assert len(results) == 1
+    assert results[0]["name"] == "alpha"

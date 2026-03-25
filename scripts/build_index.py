@@ -93,6 +93,12 @@ Examples:
         default="data/waverider.db",
         help="Path to SQLite database (default: data/waverider.db)",
     )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        default=False,
+        help="Force a full rebuild (default: incremental)",
+    )
 
     args = parser.parse_args()
 
@@ -136,14 +142,24 @@ Examples:
             codebase_path=str(codebase_path),
             description=args.description,
             batch_size=args.batch_size,
+            incremental=not args.full,
         )
 
         print("\n" + "=" * 60)
         print("Indexing complete!")
         print("=" * 60)
-        print(f"Files indexed: {stats['total_files_indexed']}")
-        print(f"Snippets extracted: {stats['total_snippets']}")
-        print(f"Embeddings generated: {stats['total_embeddings']}")
+        print(f"Total files in index: {stats['total_files_indexed']}")
+        print(f"Total snippets: {stats['total_snippets']}")
+        print(f"Total embeddings: {stats['total_embeddings']}")
+        print(f"Files processed this run: {stats['files_processed']}")
+        print(f"Files unchanged: {stats['files_unchanged']}")
+        print(f"Files deleted: {stats['files_deleted']}")
+
+        # Build precomputed vector index for fast search
+        codebase_meta = db.get_codebase(args.index_name)
+        if codebase_meta:
+            n_vecs = db.build_vector_index(codebase_meta["id"])
+            print(f"\n\u2713 Vector index built: {n_vecs} vectors")
 
         # Optional: Build Neo4j graph
         if args.use_neo4j:
@@ -167,6 +183,7 @@ Examples:
             "codebase_path": str(codebase_path),
             "embedding_provider": args.embedding_provider,
             "embedding_model": args.model,
+            "incremental": not args.full,
             **stats,
         }
 

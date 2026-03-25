@@ -33,8 +33,9 @@ class CodebaseIndexer:
         ".py": "python",
         ".js": "javascript",
         ".ts": "typescript",
-        ".jsx": "javascript",
-        ".tsx": "typescript",
+        ".jsx": "jsx",
+        ".tsx": "tsx",
+        ".rb": "ruby",
         ".java": "java",
         ".cpp": "cpp",
         ".c": "c",
@@ -269,6 +270,9 @@ class CodebaseIndexer:
     def extract_snippets(self, file_path: Path, content: str) -> List[CodeSnippetInfo]:
         """Extract code snippets from a file.
 
+        Uses tree-sitter when a grammar is available, falling back to the
+        built-in AST extractor for Python and whole-file for other languages.
+
         Args:
             file_path: Path to the file
             content: File content
@@ -278,12 +282,20 @@ class CodebaseIndexer:
         """
         language = self.SUPPORTED_EXTENSIONS.get(file_path.suffix, "unknown")
 
+        # Prefer tree-sitter when the grammar is installed
+        try:
+            from waverider.treesitter_parser import is_supported, extract_snippets as ts_extract
+
+            if is_supported(language):
+                return ts_extract(content, language, file_path)
+        except ImportError:
+            pass
+
+        # Fallback: built-in Python AST extractor
         if language == "python":
             return self.extract_python_snippets(file_path, content)
 
-        # For non-Python files, return file as single snippet
-        # TODO: we want to support at least Javascript/TypeScript, and Ruby. 
-        # Possibly HTML and CSS as well.
+        # For non-Python files without tree-sitter, return file as single snippet
         lines = content.split("\n")
         return [
             CodeSnippetInfo(
@@ -302,6 +314,7 @@ class CodebaseIndexer:
         codebase_path: str,
         description: str = "",
         batch_size: int = 10,
+        incremental: bool = True,
     ) -> Dict[str, Any]:
         """Index a codebase.
 
@@ -310,6 +323,7 @@ class CodebaseIndexer:
             codebase_path: Path to codebase root
             description: Optional description
             batch_size: Number of snippets to embed in each batch
+            incremental: When True, skip files whose content_hash hasn't changed
 
         Returns:
             Index statistics
@@ -322,26 +336,65 @@ class CodebaseIndexer:
             name=codebase_name, path=codebase_path, description=description
         )
 
-        # Full rebuild semantics: clear previous index rows for this codebase.
-        self.db.reset_codebase_contents(codebase_id)
-
         print(f"Indexing codebase: {codebase_name}")
         print(f"Path: {codebase_path}")
 
         # Get files to index
         files = self.get_files_to_index(codebase_path)
-        print(f"Found {len(files)} files to index")
+        print(f"Found {len(files)} files on disk")
+
+        # ----- Incremental diffing -----
+        files_to_process: List[Tuple[Path, str]]  # (path, content_hash)
+        unchanged_count = 0
+        deleted_count = 0
+
+        if incremental:
+            existing = self.db.get_file_hashes(codebase_id)
+            current_map: Dict[str, Tuple[Path, str]] = {}  # rel_path -> (abs_path, hash)
+
+            for file_path in files:
+                with open(file_path, "rb") as f:
+                    content_hash = hashlib.sha256(f.read()).hexdigest()
+                relative_path = str(file_path.relative_to(codebase_path))
+                current_map[relative_path] = (file_path, content_hash)
+
+            files_to_process = []
+            for rel_path, (abs_path, cur_hash) in current_map.items():
+                if rel_path in existing:
+                    _, old_hash = existing[rel_path]
+                    if old_hash == cur_hash:
+                        unchanged_count += 1
+                        continue
+                    # Changed – remove old contents before re-indexing
+                    file_id, _ = existing[rel_path]
+                    self.db.delete_file_contents(file_id)
+                files_to_process.append((abs_path, cur_hash))
+
+            # Remove files that no longer exist on disk
+            for rel_path, (file_id, _) in existing.items():
+                if rel_path not in current_map:
+                    self.db.delete_source_file(file_id)
+                    deleted_count += 1
+
+            print(
+                f"  {unchanged_count} unchanged, {len(files_to_process)} to (re)index, "
+                f"{deleted_count} deleted"
+            )
+        else:
+            # Full rebuild
+            self.db.reset_codebase_contents(codebase_id)
+            files_to_process = []
+            for file_path in files:
+                with open(file_path, "rb") as f:
+                    content_hash = hashlib.sha256(f.read()).hexdigest()
+                files_to_process.append((file_path, content_hash))
 
         total_snippets = 0
         total_embeddings = 0
 
         # Process each file
-        for file_path in files:
+        for file_path, content_hash in files_to_process:
             try:
-                # Calculate file hash
-                with open(file_path, "rb") as f:
-                    content_hash = hashlib.sha256(f.read()).hexdigest()
-
                 # Read file content
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
@@ -396,8 +449,11 @@ class CodebaseIndexer:
         return {
             "codebase_id": codebase_id,
             "codebase_name": codebase_name,
-            "total_files_indexed": len(files),
+            "total_files_indexed": stats["total_files"],
             "total_snippets": stats["total_snippets"],
             "total_embeddings": stats["total_embeddings"],
+            "files_unchanged": unchanged_count,
+            "files_deleted": deleted_count,
+            "files_processed": len(files_to_process),
             "indexed_at": datetime.now().isoformat(),
         }

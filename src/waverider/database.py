@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple, Dict
 from datetime import datetime
 import json
+import logging
+
+import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 class DatabaseManager:
@@ -20,6 +25,7 @@ class DatabaseManager:
         """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._faiss_cache: Dict[int, Tuple[Any, np.ndarray]] = {}  # codebase_id -> (index, id_map)
 
     def connect(self) -> sqlite3.Connection:
         """Create and return database connection."""
@@ -377,6 +383,130 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    # ------------------------------------------------------------------
+    # Precomputed vector index (numpy, with optional FAISS acceleration)
+    # ------------------------------------------------------------------
+
+    def _vector_paths(self, codebase_id: int) -> Tuple[Path, Path]:
+        """Return (matrix_path, ids_path) for the precomputed vector index."""
+        base = self.db_path.parent / f"vectors_{codebase_id}"
+        return base.with_suffix(".npy"), base.with_suffix(".ids.npy")
+
+    def build_vector_index(self, codebase_id: int) -> int:
+        """Build a precomputed L2-normalised embedding matrix for fast search.
+
+        Returns the number of vectors indexed.
+        """
+        conn = self.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT e.snippet_id, e.embedding_vector
+            FROM embeddings e
+            JOIN code_snippets cs ON e.snippet_id = cs.id
+            JOIN source_files sf ON cs.file_id = sf.id
+            WHERE sf.codebase_id = ?
+            ORDER BY e.snippet_id
+            """,
+            (codebase_id,),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            return 0
+
+        ids = np.array([r["snippet_id"] for r in rows], dtype=np.int64)
+        vecs = np.array(
+            [json.loads(r["embedding_vector"]) for r in rows], dtype=np.float32
+        )
+
+        # L2-normalise so dot-product == cosine similarity
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        vecs = vecs / norms
+
+        mat_path, ids_path = self._vector_paths(codebase_id)
+        np.save(str(mat_path), vecs)
+        np.save(str(ids_path), ids)
+
+        self._faiss_cache[codebase_id] = (vecs, ids)
+        log.info("Vector index built: %d vectors, dim=%d", len(ids), vecs.shape[1])
+        return len(ids)
+
+    def _load_vectors(self, codebase_id: int) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Load precomputed vectors from cache or disk."""
+        if codebase_id in self._faiss_cache:
+            return self._faiss_cache[codebase_id]
+
+        mat_path, ids_path = self._vector_paths(codebase_id)
+        if not mat_path.exists() or not ids_path.exists():
+            return None
+
+        vecs = np.load(str(mat_path))
+        ids = np.load(str(ids_path))
+        self._faiss_cache[codebase_id] = (vecs, ids)
+        return vecs, ids
+
+    def _search_vectors(
+        self,
+        query_embedding: List[float],
+        codebase_id: int,
+        limit: int,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Numpy-vectorized cosine similarity search. Returns None if no index."""
+        loaded = self._load_vectors(codebase_id)
+        if loaded is None:
+            return None
+
+        mat, id_map = loaded
+        qvec = np.array(query_embedding, dtype=np.float32)
+        qnorm = np.linalg.norm(qvec)
+        if qnorm == 0:
+            return []
+        qvec = qvec / qnorm
+
+        # Vectorized dot-product (cosine similarity on pre-normalised matrix)
+        scores = mat @ qvec  # shape: (n,)
+
+        k = min(limit, len(scores))
+        top_k = np.argpartition(-scores, k)[:k]
+        top_k = top_k[np.argsort(-scores[top_k])]
+
+        snippet_ids = [int(id_map[i]) for i in top_k]
+        if not snippet_ids:
+            return []
+
+        conn = self.connect()
+        cursor = conn.cursor()
+        placeholders = ",".join("?" for _ in snippet_ids)
+        cursor.execute(
+            f"""
+            SELECT cs.id, cs.name, cs.snippet_type, cs.content,
+                   sf.relative_path AS file_path,
+                   cs.start_line, cs.end_line, cs.language
+            FROM code_snippets cs
+            JOIN source_files sf ON cs.file_id = sf.id
+            WHERE cs.id IN ({placeholders})
+            """,
+            snippet_ids,
+        )
+        rows = {r["id"]: dict(r) for r in cursor.fetchall()}
+        conn.close()
+
+        results = []
+        for idx_pos in top_k:
+            sid = int(id_map[idx_pos])
+            if sid in rows:
+                row = rows[sid]
+                row["similarity"] = round(float(scores[idx_pos]), 4)
+                results.append(row)
+        return results
+
+    # ------------------------------------------------------------------
+    # Embedding search (precomputed index with brute-force fallback)
+    # ------------------------------------------------------------------
+
     def search_embeddings(
         self,
         query_embedding: List[float],
@@ -384,7 +514,25 @@ class DatabaseManager:
         limit: int = 10,
         threshold: float = 0.0,
     ) -> List[Dict[str, Any]]:
-        """Return the top-k snippets most similar to query_embedding (cosine similarity)."""
+        """Return the top-k snippets most similar to query_embedding (cosine similarity).
+
+        Uses precomputed numpy vector index if available, otherwise falls back
+        to a pure-Python brute-force computation.
+        """
+        fast_results = self._search_vectors(query_embedding, codebase_id, limit)
+        if fast_results is not None:
+            return fast_results
+
+        return self._search_brute_force(query_embedding, codebase_id, limit, threshold)
+
+    def _search_brute_force(
+        self,
+        query_embedding: List[float],
+        codebase_id: int,
+        limit: int,
+        threshold: float,
+    ) -> List[Dict[str, Any]]:
+        """Pure-Python brute-force cosine similarity search (fallback)."""
         import math
 
         conn = self.connect()
@@ -424,6 +572,70 @@ class DatabaseManager:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [d for _, d in scored[:limit]]
+
+    # ------------------------------------------------------------------
+    # Per-file deletion (for incremental re-indexing)
+    # ------------------------------------------------------------------
+
+    def delete_file_contents(self, file_id: int) -> None:
+        """Delete all snippets and embeddings for a specific source file.
+
+        The source_file row itself is kept so that add_source_file can UPSERT it.
+        """
+        conn = self.connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                DELETE FROM embeddings
+                WHERE snippet_id IN (
+                    SELECT id FROM code_snippets WHERE file_id = ?
+                )
+                """,
+                (file_id,),
+            )
+            cursor.execute("DELETE FROM code_snippets WHERE file_id = ?", (file_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def delete_source_file(self, file_id: int) -> None:
+        """Delete a source file and all its snippets / embeddings."""
+        conn = self.connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                DELETE FROM embeddings
+                WHERE snippet_id IN (
+                    SELECT id FROM code_snippets WHERE file_id = ?
+                )
+                """,
+                (file_id,),
+            )
+            cursor.execute("DELETE FROM code_snippets WHERE file_id = ?", (file_id,))
+            cursor.execute("DELETE FROM source_files WHERE id = ?", (file_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get_file_hashes(self, codebase_id: int) -> Dict[str, Tuple[int, str]]:
+        """Return {relative_path: (file_id, content_hash)} for all indexed files."""
+        conn = self.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, relative_path, content_hash FROM source_files WHERE codebase_id = ?",
+            (codebase_id,),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return {row["relative_path"]: (row["id"], row["content_hash"]) for row in rows}
 
     def get_statistics(self, codebase_id: int) -> Dict[str, Any]:
         """Get statistics for a codebase."""
