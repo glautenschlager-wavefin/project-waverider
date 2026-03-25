@@ -193,6 +193,37 @@ poetry run python scripts/setup_neo4j.py
 poetry run python scripts/test_neo4j_connection.py
 ```
 
+## Using Waverider with AI Agents
+
+When this project is opened in an AI-enabled code editor (like VS Code with GitHub Copilot), Waverider exposes two MCP tools for semantic code search:
+
+### Available Tools
+
+1. **`search_codebase(query, codebase_name, limit)`** — Keyword-based search via Neo4j
+   - Best for: Finding code by explicit class/function names
+   - Example: "Find DatabaseManager implementation"
+
+2. **`retrieve_code(query, codebase_name, limit)`** — Semantic search via embeddings
+   - Best for: Finding code by concept or behavior
+   - Example: "How is code indexed and stored?"
+
+### Configuration
+
+The MCP server is defined in `.vscode/mcp.json` and launched automatically when the workspace is opened. For more details, see [AGENTS.md](AGENTS.md).
+
+### Example Agent Query
+
+In a chat with the AI agent in this workspace:
+
+> "How do Waverider's SQLite and Neo4j layers work together to index code?"
+
+The agent will automatically use the MCP tools to:
+1. Search for database-related code (`search_codebase`)
+2. Retrieve implementation details about indexing (`retrieve_code`)
+3. Summarize relationships and answer your question
+
+See [AGENTS.md](AGENTS.md) for a complete agent decision tree and troubleshooting guide.
+
 ## Contributing
 
 This is an experimental project. Contributions welcome!
