@@ -48,7 +48,12 @@ ENV PATH="/app/.venv/bin:$PATH" \
 # Default env vars — override via docker-compose or .env
 ENV NEO4J_URI="bolt://neo4j:7687" \
     NEO4J_USER="neo4j" \
-    OLLAMA_HOST="http://host.docker.internal:11434"
+    OLLAMA_HOST="http://host.docker.internal:11434" \
+    MCP_TRANSPORT="sse" \
+    MCP_HOST="0.0.0.0" \
+    MCP_PORT="8000"
+
+EXPOSE 8000
 
 # Ensure data dir exists for volume mount, switch to non-root user
 RUN mkdir -p /app/data && chown -R waverider:waverider /app

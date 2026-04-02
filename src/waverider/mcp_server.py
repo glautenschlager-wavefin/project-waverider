@@ -1,6 +1,7 @@
 """MCP server for Waverider - exposes codebase knowledge graph as MCP tools."""
 
 import json
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -16,7 +17,11 @@ def _load_project_env() -> None:
 
 _load_project_env()
 
-mcp = FastMCP("waverider")
+mcp = FastMCP(
+    "waverider",
+    host=os.getenv("MCP_HOST", "127.0.0.1"),
+    port=int(os.getenv("MCP_PORT", "8000")),
+)
 
 
 @mcp.tool()
@@ -163,4 +168,5 @@ def neo4j_status() -> str:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    transport = os.getenv("MCP_TRANSPORT", "stdio")
+    mcp.run(transport=transport)
