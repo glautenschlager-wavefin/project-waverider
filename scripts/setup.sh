@@ -230,7 +230,7 @@ index_repos() {
     local failed=()
 
     for repo in "${SELECTED_REPOS[@]}"; do
-        ((current++))
+        ((++current))
         local repo_path="$REPOS_DIR/$repo"
 
         echo ""
