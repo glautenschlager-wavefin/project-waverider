@@ -199,11 +199,8 @@ MCPEOF
     local prompts_dir="$mcp_config_dir/prompts"
     local instructions_file="$prompts_dir/waverider.instructions.md"
 
-    if [[ -f "$instructions_file" ]]; then
-        ok "Waverider instructions already installed"
-    else
-        mkdir -p "$prompts_dir"
-        cat > "$instructions_file" <<'INSTREOF'
+    mkdir -p "$prompts_dir"
+    cat > "$instructions_file" <<'INSTREOF'
 ---
 applyTo: "**"
 ---
@@ -211,11 +208,18 @@ applyTo: "**"
 
 You have access to **Waverider** MCP tools for searching Wave's codebases.
 
+## Policy
+
+- For implementation, flow tracing, and architecture questions, use Waverider first.
+- Do not skip Waverider just because the repo is open locally.
+- Use local file reads only after Waverider when additional missing context is needed.
+
 ## When to use Waverider
 
 - User asks how something is implemented in a Wave service → use `search_codebase`
 - User asks to find a function, class, or pattern across repos → use `search_codebase`
 - User wants to understand call graphs or relationships → use `neo4j_status`, then `search_codebase`
+- User asks for an end-to-end request flow, caller chain, or dependency path → use `search_codebase`
 
 ## Tool: `search_codebase`
 
@@ -231,9 +235,12 @@ Parameters:
 - When results contain relevant code, **use them directly** — do not re-read the source files.
 - If you are unsure which codebase to search, try the repo name matching the user's project.
 - Waverider indexes Wave's Python/TypeScript services. It does not cover infrastructure or config repos.
+
+## Anti-Pattern to Avoid
+
+- "I used local grep/read_file first because the repo was already available" is not acceptable for implementation analysis.
 INSTREOF
-        ok "Waverider instructions installed → $instructions_file"
-    fi
+    ok "Waverider instructions refreshed → $instructions_file"
 }
 
 # ──────────────────────────────────────────────────────────────────────

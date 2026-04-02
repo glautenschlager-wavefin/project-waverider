@@ -20,6 +20,13 @@ This workspace has access to **Waverider** — a semantic code search and indexi
 
 **IMPORTANT: When Waverider MCP tools return relevant code snippets, use them directly to answer questions. Do not read original source files unless the snippets are clearly insufficient for the question at hand.**
 
+### Default Policy (Waverider-First)
+
+- For implementation, execution flow, architecture, relationship, and "where is X called" questions, call Waverider first.
+- Do not default to local grep/read_file just because the repo is open or files are accessible.
+- A direct local-file-first approach is only acceptable when the user explicitly asks for a specific file edit, a tiny single-file clarification, or setup/docs metadata where code search is unnecessary.
+- If Waverider returns incomplete context, then read only the minimal missing local files.
+
 - `retrieve_code` returns complete function/method implementations. Prefer it for "how does X work?" questions.
 - `search_codebase` returns structural overviews with signatures and docstrings. Use it to discover what exists, then use `retrieve_code` for implementation details.
 - Only fall back to reading source files if the returned snippets don't cover the specific context needed (e.g., module-level configuration, cross-file relationships not captured in snippets).
@@ -31,12 +38,17 @@ This workspace has access to **Waverider** — a semantic code search and indexi
 - User asks about **code patterns** or **architecture**
 - User requests **code examples** from the codebase
 - User wants to **find specific implementations** of concepts
+- User asks to trace a request path, caller/callee chain, or end-to-end flow
 
 ### When NOT to Use Waverider
 
 - Simple questions about the project (README is often faster)
 - User is asking about setup/installation
 - User is asking theoretical questions unrelated to the actual codebase
+
+### Anti-Pattern to Avoid
+
+- "I skipped Waverider because the repo is local/open" is not a valid reason for implementation analysis in this workspace.
 
 ### Default Codebase
 

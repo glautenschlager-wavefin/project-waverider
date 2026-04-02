@@ -46,6 +46,8 @@ explore_graph(entity_name="search_embeddings", codebase_name="waverider", relati
 
 ## Agent Decision Tree
 
+Default stance: for code-understanding tasks in Wave services, use Waverider before manual local file search.
+
 **Use Waverider tools when:**
 - User asks "How does [class/function] work?" -> Use `search` with default alpha
 - User asks "How is [behavior] implemented?" -> Use `search` with `alpha=0.7` (semantic-leaning)
@@ -53,6 +55,7 @@ explore_graph(entity_name="search_embeddings", codebase_name="waverider", relati
 - User asks "What calls function X?" or "Show methods of class Y" -> Use `explore_graph`
 - User asks for code examples -> Use `search` with semantic query
 - User asks about architecture/design -> Use `search` then `explore_graph` for call graphs
+- User asks for an end-to-end flow trace -> Use `search` then `explore_graph` for callers/callees
 
 **After receiving tool results:**
 - If results contain relevant code snippets -> **answer directly from the snippets**. Do NOT read the original source files.
@@ -64,7 +67,8 @@ explore_graph(entity_name="search_embeddings", codebase_name="waverider", relati
 - User asks setup/installation questions -> Use README
 - User asks project metadata (authors, license) -> Use README or config files
 - User asks theoretical CS questions -> Answer directly
-- Question is already answerable from editing context (open file)
+
+Important: "The file is already open" is not sufficient justification to skip Waverider for implementation/flow analysis.
 
 ---
 
