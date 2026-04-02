@@ -401,11 +401,12 @@ class DatabaseManager:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT e.snippet_id, e.embedding_vector
+            SELECT e.snippet_id, e.embedding_vector, e.embedding_dimensions
             FROM embeddings e
             JOIN code_snippets cs ON e.snippet_id = cs.id
             JOIN source_files sf ON cs.file_id = sf.id
             WHERE sf.codebase_id = ?
+              AND e.embedding_dimensions > 0
             ORDER BY e.snippet_id
             """,
             (codebase_id,),
@@ -416,10 +417,22 @@ class DatabaseManager:
         if not rows:
             return 0
 
-        ids = np.array([r["snippet_id"] for r in rows], dtype=np.int64)
-        vecs = np.array(
-            [json.loads(r["embedding_vector"]) for r in rows], dtype=np.float32
-        )
+        # Determine the expected dimension (most common)
+        expected_dim = rows[0]["embedding_dimensions"]
+
+        # Filter to only rows with consistent dimensions
+        valid = [(r["snippet_id"], json.loads(r["embedding_vector"]))
+                 for r in rows if r["embedding_dimensions"] == expected_dim]
+
+        if not valid:
+            return 0
+
+        ids = np.array([v[0] for v in valid], dtype=np.int64)
+        vecs = np.array([v[1] for v in valid], dtype=np.float32)
+
+        skipped = len(rows) - len(valid)
+        if skipped:
+            log.warning("Skipped %d embeddings with mismatched dimensions", skipped)
 
         # L2-normalise so dot-product == cosine similarity
         norms = np.linalg.norm(vecs, axis=1, keepdims=True)
