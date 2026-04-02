@@ -415,6 +415,29 @@ poetry run python scripts/run_dev_server.py
 
 ## Troubleshooting
 
+### Ollama + Docker Issues
+
+**"Docker containers cannot reach Ollama"**
+- Cause: Ollama is bound to `127.0.0.1` only.
+- Fix on macOS (Homebrew service):
+
+```bash
+launchctl setenv OLLAMA_HOST "0.0.0.0:11434"
+brew services restart ollama
+```
+
+- Verify from host:
+
+```bash
+curl http://localhost:11434/api/version
+```
+
+- Verify from a container:
+
+```bash
+docker run --rm curlimages/curl:8.7.1 curl -s http://host.docker.internal:11434/api/version
+```
+
 ### SQLite Issues
 
 **"database is locked"**

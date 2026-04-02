@@ -144,6 +144,17 @@ Create a `.env` file in the project root:
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=your-password
+
+# Waverider in Docker should call host Ollama via host.docker.internal
+OLLAMA_HOST=http://host.docker.internal:11434
+```
+
+If you run Ollama via Homebrew on macOS and call it from Docker containers, ensure
+Ollama listens on all interfaces instead of loopback-only:
+
+```bash
+launchctl setenv OLLAMA_HOST "0.0.0.0:11434"
+brew services restart ollama
 ```
 
 ## Neo4j Runtime

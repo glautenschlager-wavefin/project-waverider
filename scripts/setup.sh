@@ -47,6 +47,18 @@ setup_ollama() {
         ok "Ollama installed"
     fi
 
+    # Ensure Ollama listens on all interfaces so Docker containers can reach it
+    # through host.docker.internal.
+    local desired_ollama_host="0.0.0.0:11434"
+    local current_launchctl_host
+    current_launchctl_host="$(launchctl getenv OLLAMA_HOST || true)"
+    if [[ "$current_launchctl_host" != "$desired_ollama_host" ]]; then
+        info "Configuring Ollama service bind address ($desired_ollama_host)…"
+        launchctl setenv OLLAMA_HOST "$desired_ollama_host"
+        # Restart to apply launchctl env updates for the Homebrew service.
+        brew services restart ollama >/dev/null 2>&1 || brew services start ollama
+    fi
+
     # Ensure Ollama is running
     if ! curl -sf http://localhost:11434/api/version &>/dev/null; then
         info "Starting Ollama…"
