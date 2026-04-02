@@ -38,34 +38,34 @@ An **MCP (Model Context Protocol) server** for building vector indices and knowl
 ## Architecture
 
 ```
-┌─────────────────────────────────────────┐
-│         Source Code Codebase            │
-└──────────────────┬──────────────────────┘
-                   │
-        ┌──────────┴──────────┬──────────────┐
-        │                     │              │
-    ┌───▼────┐         ┌─────▼────┐    ┌───▼──────┐
-    │CodeFile│         │ Embeddings│    │Snippet   │
-    └──┬─────┘         └──────┬────┘    │Metadata  │
-       │                      │         └──────────┘
-       │    ┌─────────────────┘
-       │    │
-    ┌──▼────▼──────────┐          ┌─────────────┐
-    │   SQLite DB      │          │  Neo4j      │
-    │   (Embeddings    │          │  (Knowledge │
-    │   + Metadata)    │          │   Graph)    │
-    └─────┬────────────┘          └────────────┐
-          │                                    │
-          └────────────────┬─────────────────┘
-                           │
-                    ┌──────▼──────┐
-                    │ MCP Server  │
-                    │(Query API)  │
-                    └──────┬──────┘
-                           │
-                      ┌────▼────┐
-                      │   LLM   │
-                      └─────────┘
+┌───────────────────────┐
+│ AI Client / LLM Agent │
+└───────────┬───────────┘
+       │ MCP (SSE/stdout)
+       ▼
+┌─────────────────────────────────────────────┐
+│ Waverider MCP Server                        │
+│ - index/query orchestration                 │
+│ - search + retrieve tools                   │
+└───────┬───────────────────────┬─────────────┘
+   │                       │
+   │ read/write            │ optional graph sync/query
+   ▼                       ▼
+┌──────────────────────┐   ┌─────────────────────┐
+│ SQLite (embedded)    │   │ Neo4j (service)     │
+│ snippets + vectors   │   │ code relationships  │
+└──────────┬───────────┘   └─────────────────────┘
+      │
+      │ embedding requests
+      ▼
+┌─────────────────────────────────────────────┐
+│ Ollama API (nomic-embed-text)              │
+│ - host service on macOS/Windows Docker use │
+│   host.docker.internal                      │
+│ - optional containerized Ollama (gpu)      │
+└─────────────────────────────────────────────┘
+
+Index build flow: source code -> parser/chunker -> embeddings -> SQLite (+ Neo4j optional)
 ```
 
 ## Project Structure
