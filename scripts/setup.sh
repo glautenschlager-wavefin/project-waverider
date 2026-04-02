@@ -8,9 +8,9 @@
 # What it does:
 #   1. Installs & starts Ollama, pulls the embedding model
 #   2. Starts Docker services (Neo4j)
-#   3. Discovers locally cloned Wave repos
-#   4. Lets you pick which repos to index
-#   5. Indexes selected repos
+#   3. Registers the MCP server with VS Code / GitHub Copilot
+#   4. Discovers locally cloned Wave repos
+#   5. Lets you pick which repos to index, then indexes them
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -37,7 +37,7 @@ header() { echo -e "\n${BOLD}$*${NC}"; echo "$(printf '─%.0s' $(seq 1 60))"; }
 # Step 1: Ollama
 # ──────────────────────────────────────────────────────────────────────
 setup_ollama() {
-    header "Step 1/4 · Ollama (embedding engine)"
+    header "Step 1/5 · Ollama (embedding engine)"
 
     if command -v ollama &>/dev/null; then
         ok "Ollama already installed"
@@ -75,7 +75,7 @@ setup_ollama() {
 # Step 2: Docker services
 # ──────────────────────────────────────────────────────────────────────
 setup_docker() {
-    header "Step 2/4 · Docker services (Neo4j + Waverider image)"
+    header "Step 2/5 · Docker services (Neo4j + Waverider image)"
 
     if ! docker info &>/dev/null; then
         fail "Docker daemon is not running. Start Rancher Desktop / Docker Desktop first."
@@ -119,10 +119,116 @@ setup_docker() {
 }
 
 # ──────────────────────────────────────────────────────────────────────
-# Step 3: Discover repos
+# Step 3: Register MCP server with VS Code
+# ──────────────────────────────────────────────────────────────────────
+register_mcp() {
+    header "Step 3/5 · Register MCP server with VS Code"
+
+    local mcp_config_dir="$HOME/Library/Application Support/Code/User"
+    local mcp_config="$mcp_config_dir/mcp.json"
+    local mcp_url="http://localhost:8000/sse"
+
+    # Detect Linux / non-macOS VS Code config path
+    if [[ ! -d "$mcp_config_dir" ]]; then
+        mcp_config_dir="$HOME/.config/Code/User"
+        mcp_config="$mcp_config_dir/mcp.json"
+    fi
+
+    if [[ ! -d "$mcp_config_dir" ]]; then
+        warn "VS Code user config directory not found — skipping MCP registration"
+        echo "  Add this to your VS Code MCP config manually:"
+        echo "    { \"servers\": { \"waverider\": { \"url\": \"$mcp_url\" } } }"
+        return
+    fi
+
+    # Check if waverider is already registered
+    if [[ -f "$mcp_config" ]] && python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+if 'waverider' in d.get('servers', {}):
+    sys.exit(0)
+sys.exit(1)
+" "$mcp_config" 2>/dev/null; then
+        ok "Waverider MCP server already registered in VS Code"
+        return
+    fi
+
+    # Add waverider to the config (create or merge)
+    if [[ -f "$mcp_config" ]]; then
+        # Merge into existing config
+        python3 -c "
+import json, sys
+config_path = sys.argv[1]
+with open(config_path) as f:
+    d = json.load(f)
+d.setdefault('servers', {})['waverider'] = {'url': '$mcp_url'}
+with open(config_path, 'w') as f:
+    json.dump(d, f, indent=2)
+    f.write('\\n')
+" "$mcp_config"
+    else
+        # Create new config
+        cat > "$mcp_config" <<MCPEOF
+{
+  "servers": {
+    "waverider": {
+      "url": "$mcp_url"
+    }
+  }
+}
+MCPEOF
+    fi
+
+    ok "Waverider MCP server registered at $mcp_url"
+    info "Reload VS Code (Cmd+Shift+P → 'Developer: Reload Window') to activate"
+
+    # ── Install user-level instructions so Copilot knows when to use Waverider ──
+    local prompts_dir="$mcp_config_dir/prompts"
+    local instructions_file="$prompts_dir/waverider.instructions.md"
+
+    if [[ -f "$instructions_file" ]]; then
+        ok "Waverider instructions already installed"
+    else
+        mkdir -p "$prompts_dir"
+        cat > "$instructions_file" <<'INSTREOF'
+---
+applyTo: "**"
+---
+# Waverider — Wave Codebase Search
+
+You have access to **Waverider** MCP tools for searching Wave's codebases.
+
+## When to use Waverider
+
+- User asks how something is implemented in a Wave service → use `search_codebase`
+- User asks to find a function, class, or pattern across repos → use `search_codebase`
+- User wants to understand call graphs or relationships → use `neo4j_status`, then `search_codebase`
+
+## Tool: `search_codebase`
+
+Hybrid search (keyword + semantic). Returns **full source code** of matching functions/classes.
+
+Parameters:
+- `query`: what to search for (identifier name or natural language description)
+- `codebase_name`: which repo to search (e.g. "accounting", "reef", "identity", "payroll")
+- `limit`: max results (default 10)
+
+## Guidelines
+
+- When results contain relevant code, **use them directly** — do not re-read the source files.
+- If you are unsure which codebase to search, try the repo name matching the user's project.
+- Waverider indexes Wave's Python/TypeScript services. It does not cover infrastructure or config repos.
+INSTREOF
+        ok "Waverider instructions installed → $instructions_file"
+    fi
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# Step 4: Discover repos
 # ──────────────────────────────────────────────────────────────────────
 discover_repos() {
-    header "Step 3/4 · Discover codebases"
+    header "Step 4/5 · Discover codebases"
 
     # Ask for repos directory
     local repos_dir="$DEFAULT_REPOS_DIR"
@@ -220,10 +326,10 @@ EOF
 }
 
 # ──────────────────────────────────────────────────────────────────────
-# Step 4: Index selected repos
+# Step 5: Index selected repos
 # ──────────────────────────────────────────────────────────────────────
 index_repos() {
-    header "Step 4/4 · Index codebases (inside Docker)"
+    header "Step 5/5 · Index codebases (inside Docker)"
 
     local total=${#SELECTED_REPOS[@]}
     local current=0
@@ -296,6 +402,7 @@ main() {
 
     setup_ollama
     setup_docker
+    register_mcp
     discover_repos
     index_repos
 }
