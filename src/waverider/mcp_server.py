@@ -147,7 +147,8 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
         return f"Retrieval error: {e}"
 
 
-
+@mcp.tool()
+def neo4j_status() -> str:
     """Check Neo4j connectivity and return basic graph statistics."""
     try:
         from waverider.neo4j_graph import Neo4jGraphManager

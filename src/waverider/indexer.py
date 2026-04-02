@@ -425,6 +425,13 @@ class CodebaseIndexer:
                         end_line=snippet.end_line,
                         language=snippet.language,
                     )
+                    # Populate FTS5 full-text index for BM25 search
+                    self.db.add_to_fts(
+                        snippet_id=snippet_id,
+                        name=snippet.name,
+                        content=snippet.content,
+                        file_path=relative_path,
+                    )
                     snippet_ids.append(snippet_id)
                     snippet_texts.append(snippet.content)
                     total_snippets += 1

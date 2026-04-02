@@ -98,6 +98,161 @@ def test_add_source_file_is_idempotent(temp_db):
 
     assert first_id == second_id
 
+
+# ---------------------------------------------------------------------------
+# tokenize_code_identifiers tests
+# ---------------------------------------------------------------------------
+
+from waverider.database import tokenize_code_identifiers
+
+
+class TestTokenizeCodeIdentifiers:
+    def test_snake_case(self):
+        result = tokenize_code_identifiers("add_embedding")
+        assert "add" in result
+        assert "embedding" in result
+        # Original preserved
+        assert "add_embedding" in result
+
+    def test_camel_case(self):
+        result = tokenize_code_identifiers("DatabaseManager")
+        assert "database" in result
+        assert "manager" in result
+
+    def test_pascal_case_multiple_caps(self):
+        result = tokenize_code_identifiers("HTMLParser")
+        assert "html" in result
+        assert "parser" in result
+
+    def test_dot_path(self):
+        result = tokenize_code_identifiers("waverider.database")
+        assert "waverider" in result
+        assert "database" in result
+
+    def test_combined(self):
+        result = tokenize_code_identifiers("my_module.DatabaseManager")
+        assert "my" in result
+        assert "module" in result
+        assert "database" in result
+        assert "manager" in result
+
+    def test_short_tokens_skipped(self):
+        """Identifiers shorter than 3 chars should not be split."""
+        result = tokenize_code_identifiers("ab")
+        # No extra tokens appended — just the original
+        assert result == "ab"
+
+    def test_no_splitting_needed(self):
+        """A single lowercase word should not produce extra tokens."""
+        result = tokenize_code_identifiers("search")
+        assert result == "search"
+
+    def test_preserves_original(self):
+        text = "def add_embedding(self, vec):"
+        result = tokenize_code_identifiers(text)
+        assert text in result
+
+
+# ---------------------------------------------------------------------------
+# FTS5 / BM25 search tests
+# ---------------------------------------------------------------------------
+
+class TestFTS5Search:
+    @pytest.fixture
+    def db_with_snippets(self, tmp_path):
+        """Set up a DB with FTS5 index and some snippets."""
+        db = DatabaseManager(db_path=str(tmp_path / "test.db"))
+        db.init_schema()
+        cid = db.add_codebase(name="proj", path="/proj")
+        fid = db.add_source_file(
+            codebase_id=cid,
+            file_path=str(tmp_path / "a.py"),
+            relative_path="src/database_manager.py",
+            content_hash="abc",
+        )
+        # Create the source file so add_source_file doesn't fail
+        (tmp_path / "a.py").write_text("")
+
+        s1 = db.add_code_snippet(
+            file_id=fid,
+            snippet_type="class",
+            name="DatabaseManager",
+            content="class DatabaseManager:\n    pass",
+            language="python",
+        )
+        db.add_to_fts(s1, "DatabaseManager", "class DatabaseManager:\n    pass", "src/database_manager.py")
+
+        s2 = db.add_code_snippet(
+            file_id=fid,
+            snippet_type="function",
+            name="add_embedding",
+            content="def add_embedding(self, vec):\n    self.db.insert(vec)",
+            language="python",
+        )
+        db.add_to_fts(s2, "add_embedding", "def add_embedding(self, vec):\n    self.db.insert(vec)", "src/database_manager.py")
+
+        return db, cid
+
+    def test_exact_name_match(self, db_with_snippets):
+        db, cid = db_with_snippets
+        results = db.search_bm25("DatabaseManager", cid)
+        assert len(results) > 0
+        assert any(r["name"] == "DatabaseManager" for r in results)
+
+    def test_sub_token_match(self, db_with_snippets):
+        """Searching 'database' should find 'DatabaseManager' via sub-token expansion."""
+        db, cid = db_with_snippets
+        results = db.search_bm25("database", cid)
+        assert len(results) > 0
+        names = [r["name"] for r in results]
+        assert "DatabaseManager" in names
+
+    def test_snake_case_partial(self, db_with_snippets):
+        """Searching 'embedding' should find 'add_embedding'."""
+        db, cid = db_with_snippets
+        results = db.search_bm25("embedding", cid)
+        assert len(results) > 0
+        assert any(r["name"] == "add_embedding" for r in results)
+
+    def test_bm25_score_present(self, db_with_snippets):
+        db, cid = db_with_snippets
+        results = db.search_bm25("embedding", cid)
+        for r in results:
+            assert "bm25_score" in r
+            assert isinstance(r["bm25_score"], float)
+
+    def test_no_results(self, db_with_snippets):
+        db, cid = db_with_snippets
+        results = db.search_bm25("nonexistent_xyzzy", cid)
+        assert results == []
+
+    def test_rebuild_fts_index(self, db_with_snippets):
+        db, cid = db_with_snippets
+        count = db.rebuild_fts_index(cid)
+        assert count == 2  # two snippets
+        # Search should still work after rebuild
+        results = db.search_bm25("DatabaseManager", cid)
+        assert len(results) > 0
+
+
+def test_add_source_file_verifies_hash(temp_db):
+    """Verify add_source_file actually updates the content_hash."""
+    temp_db.init_schema()
+    codebase_id = temp_db.add_codebase(name="project", path="/path/project")
+
+    first_id = temp_db.add_source_file(
+        codebase_id=codebase_id,
+        file_path="/path/project/src/main.py",
+        relative_path="src/main.py",
+        content_hash="old-hash",
+    )
+    temp_db.add_source_file(
+        codebase_id=codebase_id,
+        file_path="/path/project/src/main.py",
+        relative_path="src/main.py",
+        content_hash="new-hash",
+    )
+
     conn = temp_db.connect()
     cursor = conn.cursor()
     cursor.execute(

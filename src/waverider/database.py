@@ -2,6 +2,7 @@
 SQLite database management for Waverider.
 """
 
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, List, Optional, Tuple, Dict
@@ -12,6 +13,53 @@ import logging
 import numpy as np
 
 log = logging.getLogger(__name__)
+
+# Regex for splitting camelCase / PascalCase identifiers at case boundaries.
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def tokenize_code_identifiers(text: str) -> str:
+    """Expand code identifiers so FTS5 can match sub-tokens.
+
+    Given raw code text, this function finds identifiers that use
+    ``snake_case``, ``camelCase``, ``PascalCase``, or ``dot.paths`` and
+    appends their sub-tokens to the end of the text.  The original text is
+    preserved verbatim so exact-match queries still work.
+
+    Examples:
+        ``DatabaseManager`` → appends ``database manager``
+        ``add_embedding``   → appends ``add embedding``
+        ``waverider.database`` → appends ``waverider database``
+    """
+    # Match word-like tokens (identifiers): letters, digits, underscores, dots
+    identifiers = re.findall(r"[A-Za-z_][A-Za-z0-9_.]*", text)
+    extra_tokens: list[str] = []
+
+    seen: set[str] = set()
+    for ident in identifiers:
+        low = ident.lower()
+        if low in seen or len(ident) < 3:
+            continue
+        seen.add(low)
+
+        parts: list[str] = []
+
+        # Split on dots first (e.g. waverider.database)
+        for segment in ident.split("."):
+            # Split on underscores (snake_case)
+            for sub in segment.split("_"):
+                # Split on camelCase boundaries
+                camel_parts = _CAMEL_BOUNDARY.split(sub)
+                parts.extend(p.lower() for p in camel_parts if p)
+
+        # Only add if splitting produced multiple tokens
+        if len(parts) > 1:
+            extra_tokens.extend(parts)
+
+    if not extra_tokens:
+        return text
+
+    return text + "\n" + " ".join(extra_tokens)
 
 
 class DatabaseManager:
@@ -120,6 +168,20 @@ class DatabaseManager:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_embeddings_snippet ON embeddings(snippet_id)"
         )
+
+        # FTS5 full-text index over code snippets for BM25 keyword search.
+        # Uses a content-less (external content) table so snippet text is not
+        # duplicated — FTS5 reads through to code_snippets via rowid.
+        cursor.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS code_snippets_fts USING fts5(
+                name,
+                content,
+                file_path,
+                content=code_snippets,
+                content_rowid=id,
+                tokenize='unicode61'
+            )
+        """)
 
         conn.commit()
         conn.close()
@@ -264,6 +326,180 @@ class DatabaseManager:
             snippet_id = cursor.lastrowid
             conn.commit()
             return snippet_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # FTS5 full-text index helpers
+    # ------------------------------------------------------------------
+
+    def add_to_fts(
+        self,
+        snippet_id: int,
+        name: str,
+        content: str,
+        file_path: str,
+    ) -> None:
+        """Insert a row into the FTS5 index with code-aware tokenization.
+
+        Args:
+            snippet_id: The rowid (code_snippets.id) to associate.
+            name: Snippet name (function/class name).
+            content: Raw code content.
+            file_path: Relative file path.
+        """
+        conn = self.connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO code_snippets_fts(rowid, name, content, file_path)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    snippet_id,
+                    tokenize_code_identifiers(name),
+                    tokenize_code_identifiers(content),
+                    tokenize_code_identifiers(file_path),
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def delete_from_fts(self, snippet_id: int) -> None:
+        """Remove a row from the FTS5 index by rowid."""
+        conn = self.connect()
+        try:
+            cursor = conn.cursor()
+            # For external-content FTS5 tables, deletions use the special
+            # 'delete' command with the original column values.  Since we
+            # can't easily reconstruct the tokenized text, we rebuild the
+            # FTS index for this snippet's file in the caller.  As a simpler
+            # approach, we use the INSERT with delete command.
+            cursor.execute(
+                "INSERT INTO code_snippets_fts(code_snippets_fts, rowid, name, content, file_path) "
+                "VALUES('delete', ?, '', '', '')",
+                (snippet_id,),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def search_bm25(
+        self,
+        query: str,
+        codebase_id: int,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """BM25 keyword search over the FTS5 index.
+
+        Args:
+            query: Search terms (natural language or identifiers).
+            codebase_id: Restrict results to this codebase.
+            limit: Maximum results to return.
+
+        Returns:
+            List of result dicts with keys: id, name, snippet_type, content,
+            file_path, start_line, end_line, language, bm25_score.
+            Ordered by BM25 relevance (lower bm25 values = more relevant in
+            SQLite; we negate for a higher-is-better score).
+        """
+        # Expand the query with code-aware sub-tokens so that searching for
+        # "database" can also match "DatabaseManager" (whose expanded FTS
+        # content includes the sub-token).
+        expanded_query = tokenize_code_identifiers(query)
+        # Convert to FTS5 query: quote each token to avoid syntax issues, then
+        # OR them together for broad recall.
+        tokens = re.findall(r"\w+", expanded_query)
+        if not tokens:
+            return []
+        fts_query = " OR ".join(f'"{t}"' for t in tokens)
+
+        conn = self.connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    cs.id,
+                    cs.name,
+                    cs.snippet_type,
+                    cs.content,
+                    sf.relative_path AS file_path,
+                    cs.start_line,
+                    cs.end_line,
+                    cs.language,
+                    fts.rank AS bm25_rank
+                FROM code_snippets_fts fts
+                JOIN code_snippets cs ON cs.id = fts.rowid
+                JOIN source_files sf ON cs.file_id = sf.id
+                WHERE code_snippets_fts MATCH ?
+                  AND sf.codebase_id = ?
+                ORDER BY fts.rank
+                LIMIT ?
+                """,
+                (fts_query, codebase_id, limit),
+            )
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                d = dict(row)
+                # SQLite FTS5 rank is negative (more negative = better).
+                # Negate so higher = more relevant.
+                d["bm25_score"] = round(-d.pop("bm25_rank"), 4)
+                results.append(d)
+            return results
+        finally:
+            conn.close()
+
+    def rebuild_fts_index(self, codebase_id: int) -> int:
+        """Rebuild FTS5 index for an entire codebase from existing code_snippets.
+
+        Useful as a one-time backfill or after schema changes.
+
+        Returns:
+            Number of rows inserted into FTS.
+        """
+        conn = self.connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT cs.id, cs.name, cs.content, sf.relative_path
+                FROM code_snippets cs
+                JOIN source_files sf ON cs.file_id = sf.id
+                WHERE sf.codebase_id = ?
+                """,
+                (codebase_id,),
+            )
+            rows = cursor.fetchall()
+            count = 0
+            for row in rows:
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO code_snippets_fts(rowid, name, content, file_path)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        row["id"],
+                        tokenize_code_identifiers(row["name"] or ""),
+                        tokenize_code_identifiers(row["content"]),
+                        tokenize_code_identifiers(row["relative_path"]),
+                    ),
+                )
+                count += 1
+            conn.commit()
+            return count
         except Exception:
             conn.rollback()
             raise
