@@ -1,4 +1,4 @@
-.PHONY: help setup install format lint lint-fix type-check test all-checks neo4j-start neo4j-stop neo4j-restart neo4j-status neo4j-console mcp-start shell index index-repo clean docker-build docker-up docker-down docker-logs
+.PHONY: help setup uninstall install format lint lint-fix type-check test all-checks neo4j-start neo4j-stop neo4j-restart neo4j-status neo4j-console mcp-start shell index index-repo clean docker-build docker-up docker-down docker-logs
 
 help:
 	@echo "Waverider Development Commands"
@@ -27,6 +27,9 @@ help:
 	@echo "make docker-up       Start all services (Neo4j + MCP server)"
 	@echo "make docker-down     Stop and remove all containers"
 	@echo "make docker-logs     Tail logs for all services"
+	@echo ""
+	@echo "Uninstall:"
+	@echo "make uninstall       Remove MCP registration, instructions, containers & volumes"
 
 setup:
 	@bash scripts/setup.sh
@@ -106,6 +109,9 @@ clean:
 	find . -type d -name ".mypy_cache" -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name ".ruff_cache" -exec rm -rf {} + 2>/dev/null || true
 	rm -rf build dist
+
+uninstall:
+	@bash scripts/uninstall.sh
 
 docker-build:
 	docker compose build
