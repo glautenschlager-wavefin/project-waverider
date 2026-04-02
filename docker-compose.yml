@@ -20,8 +20,6 @@ services:
     volumes:
       - waverider-data:/app/data
       - waverider-indices:/app/indices
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   neo4j:
     image: neo4j:5

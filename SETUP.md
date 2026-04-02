@@ -438,6 +438,10 @@ curl http://localhost:11434/api/version
 docker run --rm curlimages/curl:8.7.1 curl -s http://host.docker.internal:11434/api/version
 ```
 
+- Note: Docker Desktop on macOS/Windows resolves `host.docker.internal` automatically.
+  On native Linux Docker, add a host mapping such as
+  `extra_hosts: ["host.docker.internal:host-gateway"]` if resolution fails.
+
 ### SQLite Issues
 
 **"database is locked"**

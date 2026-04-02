@@ -146,8 +146,12 @@ NEO4J_USER=neo4j
 NEO4J_PASSWORD=your-password
 
 # Waverider in Docker should call host Ollama via host.docker.internal
+# Docker Desktop on macOS/Windows resolves this automatically.
 OLLAMA_HOST=http://host.docker.internal:11434
 ```
+
+On native Linux Docker, `host.docker.internal` may require an explicit mapping such as
+`extra_hosts: ["host.docker.internal:host-gateway"]` in your Compose service.
 
 If you run Ollama via Homebrew on macOS and call it from Docker containers, ensure
 Ollama listens on all interfaces instead of loopback-only:
