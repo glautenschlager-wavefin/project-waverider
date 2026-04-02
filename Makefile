@@ -1,8 +1,9 @@
-.PHONY: help install format lint lint-fix type-check test all-checks neo4j-start neo4j-stop neo4j-restart neo4j-status neo4j-console mcp-start shell index-ollama clean docker-build docker-up docker-down docker-logs
+.PHONY: help setup install format lint lint-fix type-check test all-checks neo4j-start neo4j-stop neo4j-restart neo4j-status neo4j-console mcp-start shell index index-repo clean docker-build docker-up docker-down docker-logs
 
 help:
 	@echo "Waverider Development Commands"
 	@echo "==============================="
+	@echo "make setup           Run the setup wizard (install Ollama, start Neo4j, index repos)"
 	@echo "make install         Install dependencies"
 	@echo "make format          Format code (black + isort)"
 	@echo "make lint            Run linters (ruff)"
@@ -17,7 +18,8 @@ help:
 	@echo "make neo4j-console   Run Neo4j in the foreground"
 	@echo "make mcp-start       Start the Waverider MCP server (stdio)"
 	@echo "make shell           Start a Python shell (poetry env)"
-	@echo "make index           Build index with Ollama (the default) embeddings"
+	@echo "make index           Build index for waverider itself (in Docker)"
+	@echo "make index-repo REPO=<name>  Index a Wave repo (from ~/wave/src/<name>)"
 	@echo "make clean           Remove cache and temporary files"
 	@echo ""
 	@echo "Docker:"
@@ -25,6 +27,9 @@ help:
 	@echo "make docker-up       Start all services (Neo4j + MCP server)"
 	@echo "make docker-down     Stop and remove all containers"
 	@echo "make docker-logs     Tail logs for all services"
+
+setup:
+	@bash scripts/setup.sh
 
 install:
 	poetry install
@@ -69,7 +74,29 @@ shell:
 	poetry run python
 
 index:
-	poetry run python scripts/build_index.py --codebase-path ./ --index-name waverider --embedding-provider ollama --model nomic-embed-text
+	docker compose run --rm --no-deps \
+		-v "$$(pwd):/src/waverider:ro" \
+		-e OLLAMA_HOST=$${OLLAMA_HOST:-http://host.docker.internal:11434} \
+		--entrypoint python waverider \
+		scripts/build_index.py \
+			--codebase-path /src/waverider \
+			--index-name waverider \
+			--embedding-provider ollama \
+			--model nomic-embed-text
+
+index-repo:
+	@test -n "$(REPO)" || (echo "Usage: make index-repo REPO=<name>" && exit 1)
+	docker compose run --rm --no-deps \
+		-v "$${REPOS_DIR:-$$HOME/wave/src}/$(REPO):/src/$(REPO):ro" \
+		-e OLLAMA_HOST=$${OLLAMA_HOST:-http://host.docker.internal:11434} \
+		--entrypoint python waverider \
+		scripts/build_index.py \
+			--codebase-path "/src/$(REPO)" \
+			--index-name "$(REPO)" \
+			--description "Wave $(REPO) service" \
+			--exclude node_modules .git __pycache__ .venv venv dist build .tox migrations static fixtures vendor \
+			--embedding-provider ollama \
+			--model nomic-embed-text
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
