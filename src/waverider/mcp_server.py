@@ -104,7 +104,7 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
         from waverider.database import DatabaseManager
         from waverider.embeddings import get_embedding_provider
 
-        db = DatabaseManager(db_path="data/waverider.db")
+        db = DatabaseManager()
         codebase = db.get_codebase(codebase_name)
         if not codebase:
             return (

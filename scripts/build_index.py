@@ -89,11 +89,6 @@ Examples:
         help="Batch size for embedding generation (default: 10)",
     )
     parser.add_argument(
-        "--db-path",
-        default="data/waverider.db",
-        help="Path to SQLite database (default: data/waverider.db)",
-    )
-    parser.add_argument(
         "--full",
         action="store_true",
         default=False,
@@ -110,7 +105,7 @@ Examples:
 
     # Initialize database
     print("Setting up database...")
-    db = DatabaseManager(db_path=args.db_path)
+    db = DatabaseManager()
     db.init_schema()
 
     # Get embedding provider
@@ -154,12 +149,6 @@ Examples:
         print(f"Files processed this run: {stats['files_processed']}")
         print(f"Files unchanged: {stats['files_unchanged']}")
         print(f"Files deleted: {stats['files_deleted']}")
-
-        # Build precomputed vector index for fast search
-        codebase_meta = db.get_codebase(args.index_name)
-        if codebase_meta:
-            n_vecs = db.build_vector_index(codebase_meta["id"])
-            print(f"\n\u2713 Vector index built: {n_vecs} vectors")
 
         # Optional: Build Neo4j graph
         if args.use_neo4j:

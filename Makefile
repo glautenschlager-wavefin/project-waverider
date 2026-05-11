@@ -1,4 +1,4 @@
-.PHONY: help setup uninstall install format lint lint-fix type-check test all-checks neo4j-start neo4j-stop neo4j-restart neo4j-status neo4j-console mcp-start shell index index-repo clean docker-build docker-up docker-down docker-logs
+.PHONY: help setup uninstall install format lint lint-fix type-check test all-checks neo4j-start neo4j-stop neo4j-restart neo4j-status neo4j-console mcp-start shell index index-repo clean docker-build docker-up docker-down docker-logs token-analysis
 
 help:
 	@echo "Waverider Development Commands"
@@ -21,6 +21,9 @@ help:
 	@echo "make index           Build index for waverider itself (in Docker)"
 	@echo "make index-repo REPO=<name>  Index a Wave repo (from ~/wave/src/<name>)"
 	@echo "make clean           Remove cache and temporary files"
+	@echo ""
+	@echo "Analysis:"
+	@echo "make token-analysis  Run the token savings analysis (in Docker)"
 	@echo ""
 	@echo "Docker:"
 	@echo "make docker-build    Build the Waverider Docker image"
@@ -112,6 +115,14 @@ clean:
 
 uninstall:
 	@bash scripts/uninstall.sh
+
+token-analysis:
+	docker compose run --rm --no-deps \
+		--entrypoint python waverider \
+		scripts/token_analysis.py \
+			--engineers $${ENGINEERS:-100} \
+			--queries-per-day $${QUERIES_PER_DAY:-8} \
+			--working-days $${WORKING_DAYS:-250}
 
 docker-build:
 	docker compose build

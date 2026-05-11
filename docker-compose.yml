@@ -7,6 +7,8 @@ services:
     depends_on:
       neo4j:
         condition: service_healthy
+      paradedb:
+        condition: service_healthy
     ports:
       - "8000:8000"   # MCP SSE endpoint
     environment:
@@ -14,12 +16,30 @@ services:
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
       OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      DATABASE_URL: postgresql://waverider:${POSTGRES_PASSWORD:-changeme}@paradedb:5432/waverider
       MCP_TRANSPORT: sse
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "8000"
     volumes:
-      - waverider-data:/app/data
       - waverider-indices:/app/indices
+
+  paradedb:
+    image: paradedb/paradedb:latest
+    container_name: waverider-paradedb
+    environment:
+      POSTGRES_USER: waverider
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: waverider
+    ports:
+      - "5432:5432"
+    volumes:
+      - paradedb-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U waverider -d waverider"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   neo4j:
     image: neo4j:5
@@ -80,9 +100,8 @@ services:
               capabilities: [gpu]
 
 volumes:
-  waverider-data:
   waverider-indices:
   neo4j-data:
   neo4j-logs:
-  # postgres-data:
+  paradedb-data:
   ollama-models:
