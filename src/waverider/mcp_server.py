@@ -101,50 +101,70 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
         limit: Number of snippets to return (default: 5)
     """
     try:
+        import httpx
+        import asyncio
+        import numpy as np
         from waverider.database import DatabaseManager
-        from waverider.embeddings import get_embedding_provider
+        from waverider.fusion import rrf_fuse
 
         db = DatabaseManager()
-        codebase = db.get_codebase(codebase_name)
-        if not codebase:
+
+        # Check that the CocoIndex table exists (i.e. at least one indexing run completed).
+        if not db.coco_table_exists():
             return (
-                f"Codebase '{codebase_name}' not found in vector index. "
+                f"Codebase '{codebase_name}' has not been indexed yet. "
                 "Run: poetry run python scripts/build_index.py "
-                "--codebase-path ./src --index-name waverider"
+                f"--codebase-path /path/to/{codebase_name} --index-name {codebase_name}"
             )
 
-        # Auto-detect embedding provider from index metadata to match what was used at index time.
-        metadata_path = Path("indices") / f"{codebase_name}_metadata.json"
-        provider_name = "ollama"
-        model_name = "nomic-embed-text"
-        if metadata_path.exists():
-            with open(metadata_path) as mf:
-                meta = json.load(mf)
-            provider_name = meta.get("embedding_provider", "ollama")
-            model_name = meta.get("embedding_model", "nomic-embed-text")
-
-        provider_note = ""
+        # Embed the query using Ollama.
+        ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+        embed_model = os.getenv("OLLAMA_MODEL", "nomic-embed-text")
+        query_vec: list[float] | None = None
         try:
-            embeddings = get_embedding_provider(provider=provider_name, model=model_name)
-            query_vec = embeddings.embed(query)
-        except Exception:
-            embeddings = get_embedding_provider(provider="mock")
-            query_vec = embeddings.embed(query)
-            provider_note = " [mock embeddings — install and start Ollama for real semantic search]"
+            resp = httpx.post(
+                f"{ollama_url}/api/embeddings",
+                json={"model": embed_model, "prompt": query},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            query_vec = resp.json()["embedding"]
+        except Exception as emb_err:
+            return (
+                f"Could not generate query embedding (is Ollama running?): {emb_err}\n"
+                "Start Ollama with: ollama serve"
+            )
 
-        results = db.search_embeddings(
+        # Hybrid search: vector similarity + tsvector keyword, fused with RRF.
+        vector_results = db.search_coco_embeddings(
             query_embedding=query_vec,
-            codebase_id=codebase["id"],
+            codebase_name=codebase_name,
+            limit=limit * 2,
+        )
+        keyword_results = db.search_coco_bm25(
+            query=query,
+            codebase_name=codebase_name,
+            limit=limit * 2,
+        )
+
+        fused = rrf_fuse(
+            {"vector": vector_results, "keyword": keyword_results},
+            id_key="id",
             limit=limit,
         )
+        results = fused if fused else vector_results[:limit]
+
+        db.close()
 
         if not results:
             return f"No snippets found for '{query}'. The index may be empty — run build_index.py."
 
-        provider_note = " [mock embeddings — install and start Ollama for real semantic search]" if provider_note else ""
-        lines = [f"Top {len(results)} snippet(s) for '{query}'{provider_note}:"]
+        lines = [f"Top {len(results)} snippet(s) for '{query}':"]
         for r in results:
-            lines.append(f"\n--- {r['file_path']} ({r['snippet_type']}: {r['name']}) similarity={r['similarity']} ---")
+            score = r.get("rrf_score") or r.get("similarity", "—")
+            lines.append(
+                f"\n--- {r['file_path']} ({r['snippet_type']}: {r['name']}) score={score} ---"
+            )
             lines.append(r["content"])
         return "\n".join(lines)
 

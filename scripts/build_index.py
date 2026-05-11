@@ -1,199 +1,158 @@
 #!/usr/bin/env python3
-"""
-Build vector indices over a codebase.
+"""Build vector indices over a codebase using CocoIndex (Phase 2).
+
+CocoIndex handles all incremental processing: it detects which files changed
+since the last run and only re-extracts snippets + re-embeds those files.
+The first run is a full index; subsequent runs are incremental.
+
+Examples:
+  # Index a codebase (incremental by default)
+  python build_index.py --codebase-path /path/to/code --index-name myproject
+
+  # Force a full reindex (re-embed everything)
+  python build_index.py --codebase-path /path/to/code --index-name myproject --full
+
+  # Also build the Neo4j knowledge graph
+  python build_index.py --codebase-path /path/to/code --index-name myproject --use-neo4j
 """
 
-import sys
-import os
-import argparse
+from __future__ import annotations
+
+import asyncio
 import json
+import os
+import sys
 from pathlib import Path
 
-# Add src to path for imports
+# Add src to Python path so waverider imports resolve when run as a script.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import cocoindex as coco
+
+from waverider.cocoindex_app import make_app
 from waverider.database import DatabaseManager
-from waverider.indexer import CodebaseIndexer
-from waverider.embeddings import get_embedding_provider
 from waverider.neo4j_graph import Neo4jGraphManager
 
 
-def main():
-    """Build indices for a codebase."""
+def _parse_args():
+    import argparse
+
     parser = argparse.ArgumentParser(
-        description="Build vector indices over a codebase",
+        description="Build vector indices over a codebase (CocoIndex incremental)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Index with both SQLite and Neo4j
-  python build_index.py --codebase-path /path/to/code --index-name myproject
-
-  # Index with SQLite only (faster)
-  python build_index.py --codebase-path /path/to/code --index-name myproject --use-sqlite
-
-  # Use Ollama embeddings (default — requires local Ollama server and model)
-  python build_index.py --codebase-path /path/to/code --index-name myproject
-
-  # Use mock embeddings for testing (no external dependencies)
-  python build_index.py --codebase-path /path/to/code --embedding-provider mock
-        """,
+        epilog=__doc__,
     )
-
+    parser.add_argument("--codebase-path", required=True, help="Path to the codebase root")
+    parser.add_argument("--index-name", required=True, help="Unique name for this index")
+    parser.add_argument("--description", default="", help="Human-readable codebase description")
+    parser.add_argument("--language", default="mixed", help="Primary language (default: mixed)")
     parser.add_argument(
-        "--codebase-path",
-        required=True,
-        help="Path to the codebase to index",
-    )
-    parser.add_argument(
-        "--index-name",
-        required=True,
-        help="Unique name for this index",
-    )
-    parser.add_argument(
-        "--description",
-        default="",
-        help="Description of the codebase",
-    )
-    parser.add_argument(
-        "--use-sqlite",
+        "--full",
         action="store_true",
-        default=True,
-        help="Build SQLite indices (default: true)",
+        help="Force full reindex — re-embed every file even if unchanged",
     )
     parser.add_argument(
         "--use-neo4j",
         action="store_true",
-        help="Build Neo4j knowledge graph",
+        help="Also populate the Neo4j knowledge graph after indexing",
     )
-    parser.add_argument(
-        "--embedding-provider",
-        choices=["ollama", "mock"],
-        default="ollama",
-        help="Embedding provider (default: ollama)",
-    )
-    parser.add_argument(
-        "--model",
-        default="nomic-embed-text",
-        help="Embedding model (default: nomic-embed-text)",
-    )
-    parser.add_argument(
-        "--exclude",
-        nargs="+",
-        default=[],
-        help="Patterns to exclude from indexing",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=10,
-        help="Batch size for embedding generation (default: 10)",
-    )
-    parser.add_argument(
-        "--full",
-        action="store_true",
-        default=False,
-        help="Force a full rebuild (default: incremental)",
-    )
+    return parser.parse_args()
 
-    args = parser.parse_args()
 
-    # Validate paths
-    codebase_path = Path(args.codebase_path)
+async def _run_cocoindex(app: coco.App, *, full: bool) -> None:
+    """Run one CocoIndex update pass inside a runtime context."""
+    async with coco.runtime():
+        if full:
+            await coco.show_progress(app.update(full_reprocess=True))
+        else:
+            await coco.show_progress(app.update())
+
+
+def main() -> int:
+    args = _parse_args()
+
+    codebase_path = Path(args.codebase_path).resolve()
     if not codebase_path.exists():
         print(f"✗ Codebase path does not exist: {codebase_path}")
         return 1
 
-    # Initialize database
-    print("Setting up database...")
-    db = DatabaseManager()
-    db.init_schema()
-
-    # Get embedding provider
-    print(f"Using embedding provider: {args.embedding_provider}")
+    # ------------------------------------------------------------------
+    # 1. Register codebase in the codebase_metadata table.
+    #    This is a lightweight UPSERT so `list_codebases()` works in the
+    #    MCP server even before CocoIndex finishes the first full pass.
+    # ------------------------------------------------------------------
+    print("Registering codebase in metadata table...")
     try:
-        embeddings = get_embedding_provider(
-            provider=args.embedding_provider,
-            model=args.model,
+        db = DatabaseManager()
+        db.init_schema()
+        db.add_codebase(
+            name=args.index_name,
+            path=str(codebase_path),
+            description=args.description,
+            language=args.language,
         )
-    except Exception as e:
-        print(f"✗ Error initializing embedding provider: {e}")
+        db.close()
+        print(f"✓ Registered '{args.index_name}' in codebase_metadata")
+    except Exception as exc:
+        print(f"✗ Could not register codebase metadata: {exc}")
         return 1
 
-    # Create indexer
-    indexer = CodebaseIndexer(
-        db_manager=db,
-        embedding_provider=embeddings,
-        exclude_patterns=args.exclude,
-    )
+    # ------------------------------------------------------------------
+    # 2. Run CocoIndex to index files, extract snippets, and embed them.
+    #    CocoIndex stores its memoisation state in the database pointed to
+    #    by COCOINDEX_DB_URL (or falls back to DATABASE_URL).
+    # ------------------------------------------------------------------
+    print(f"\nStarting {'full' if args.full else 'incremental'} CocoIndex pass...")
+    print(f"  Codebase : {codebase_path}")
+    print(f"  Index    : {args.index_name}")
+    print(f"  Backend  : {os.getenv('DATABASE_URL', '(default localhost:5432/waverider)')}")
 
-    # Index codebase
     try:
-        print("\n" + "=" * 60)
-        print("Starting codebase indexing...")
-        print("=" * 60 + "\n")
-
-        stats = indexer.index_codebase(
-            codebase_name=args.index_name,
-            codebase_path=str(codebase_path),
-            description=args.description,
-            batch_size=args.batch_size,
-            incremental=not args.full,
-        )
-
-        print("\n" + "=" * 60)
-        print("Indexing complete!")
-        print("=" * 60)
-        print(f"Total files in index: {stats['total_files_indexed']}")
-        print(f"Total snippets: {stats['total_snippets']}")
-        print(f"Total embeddings: {stats['total_embeddings']}")
-        print(f"Files processed this run: {stats['files_processed']}")
-        print(f"Files unchanged: {stats['files_unchanged']}")
-        print(f"Files deleted: {stats['files_deleted']}")
-
-        # Optional: Build Neo4j graph
-        if args.use_neo4j:
-            print("\nBuilding Neo4j knowledge graph...")
-            try:
-                neo4j = Neo4jGraphManager()
-                neo4j.init_schema()
-                neo4j.add_codebase(
-                    name=args.index_name,
-                    path=str(codebase_path),
-                    description=args.description,
-                )
-                print("✓ Neo4j graph populated (basic schema)")
-                neo4j.close()
-            except Exception as e:
-                print(f"⚠ Could not initialize Neo4j: {e}")
-
-        # Save index metadata
-        metadata = {
-            "index_name": args.index_name,
-            "codebase_path": str(codebase_path),
-            "embedding_provider": args.embedding_provider,
-            "embedding_model": args.model,
-            "incremental": not args.full,
-            **stats,
-        }
-
-        metadata_path = Path("indices") / f"{args.index_name}_metadata.json"
-        metadata_path.parent.mkdir(exist_ok=True)
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
-
-        print(f"\n✓ Index metadata saved to: {metadata_path}")
-        print("\nNext steps:")
-        print(f"  - Query the index: python scripts/index_stats.py --index-name {args.index_name}")
-        print(f"  - List all indices: python scripts/list_indices.py")
-
-        return 0
-
-    except Exception as e:
-        print(f"\n✗ Error during indexing: {e}")
+        app = make_app(codebase_name=args.index_name, sourcedir=codebase_path)
+        asyncio.run(_run_cocoindex(app, full=args.full))
+        print("\n✓ CocoIndex pass complete")
+    except Exception as exc:
+        print(f"\n✗ CocoIndex indexing failed: {exc}")
         import traceback
-
         traceback.print_exc()
         return 1
+
+    # ------------------------------------------------------------------
+    # 3. (Optional) Build Neo4j knowledge graph.
+    # ------------------------------------------------------------------
+    if args.use_neo4j:
+        print("\nBuilding Neo4j knowledge graph...")
+        try:
+            neo4j = Neo4jGraphManager()
+            neo4j.init_schema()
+            neo4j.add_codebase(
+                name=args.index_name,
+                path=str(codebase_path),
+                description=args.description,
+            )
+            neo4j.close()
+            print("✓ Neo4j graph populated")
+        except Exception as exc:
+            print(f"⚠ Neo4j population failed (non-fatal): {exc}")
+
+    # ------------------------------------------------------------------
+    # 4. Save lightweight metadata JSON (for tooling / observability).
+    # ------------------------------------------------------------------
+    metadata = {
+        "index_name": args.index_name,
+        "codebase_path": str(codebase_path),
+        "indexer": "cocoindex",
+        "embedding_model": os.getenv("OLLAMA_MODEL", "nomic-embed-text"),
+        "full_reindex": args.full,
+        "neo4j": args.use_neo4j,
+    }
+    metadata_path = Path("indices") / f"{args.index_name}_metadata.json"
+    metadata_path.parent.mkdir(exist_ok=True)
+    with open(metadata_path, "w") as fh:
+        json.dump(metadata, fh, indent=2)
+    print(f"✓ Metadata saved to: {metadata_path}")
+
+    return 0
 
 
 if __name__ == "__main__":

@@ -489,3 +489,94 @@ class DatabaseManager:
         if self._pool is not None:
             self._pool.close()
             self._pool = None
+
+    # ------------------------------------------------------------------
+    # CocoIndex table search
+    # These methods query the "coco_snippets" table managed by CocoIndex
+    # (see src/waverider/cocoindex_app.py).  They are the primary search
+    # path used by the MCP server once Phase 2 indexing is active.
+    # ------------------------------------------------------------------
+
+    _COCO_TABLE = "coco_snippets"
+
+    def search_coco_embeddings(
+        self,
+        query_embedding: List[float],
+        codebase_name: str,
+        limit: int = 10,
+        threshold: float = 0.0,
+    ) -> List[Dict[str, Any]]:
+        """Cosine similarity search over the CocoIndex-managed snippet table."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    id,
+                    name,
+                    snippet_type,
+                    content,
+                    file_path,
+                    start_line,
+                    end_line,
+                    language,
+                    ROUND((1 - (embedding <=> %s::vector))::numeric, 4) AS similarity
+                FROM {self._COCO_TABLE}
+                WHERE codebase_name = %s
+                  AND (1 - (embedding <=> %s::vector)) >= %s
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+                """,
+                (query_embedding, codebase_name, query_embedding, threshold, query_embedding, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def search_coco_bm25(
+        self,
+        query: str,
+        codebase_name: str,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Keyword search over the CocoIndex-managed snippet table using tsvector.
+
+        Falls back gracefully if pg_bm25 is not available.
+        """
+        safe_query = re.sub(r"[^\w\s]", " ", query).strip()
+        if not safe_query:
+            return []
+
+        with self._conn() as conn:
+            try:
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                        id,
+                        name,
+                        snippet_type,
+                        content,
+                        file_path,
+                        start_line,
+                        end_line,
+                        language,
+                        ts_rank(to_tsvector('english', content), plainto_tsquery(%s)) AS bm25_score
+                    FROM {self._COCO_TABLE}
+                    WHERE to_tsvector('english', content) @@ plainto_tsquery(%s)
+                      AND codebase_name = %s
+                    ORDER BY bm25_score DESC
+                    LIMIT %s
+                    """,
+                    (safe_query, safe_query, codebase_name, limit),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            except Exception as exc:
+                conn.rollback()
+                log.warning("coco_bm25 search failed: %s", exc)
+                return []
+
+    def coco_table_exists(self) -> bool:
+        """Return True if the CocoIndex snippet table has been created."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT to_regclass(%s) AS t",
+                (self._COCO_TABLE,),
+            ).fetchone()
+        return row is not None and row["t"] is not None

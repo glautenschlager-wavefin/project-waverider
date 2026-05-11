@@ -17,6 +17,9 @@ services:
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
       OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
       DATABASE_URL: postgresql://waverider:${POSTGRES_PASSWORD:-changeme}@paradedb:5432/waverider
+      COCOINDEX_DB_URL: postgresql://waverider:${POSTGRES_PASSWORD:-changeme}@paradedb:5432/waverider
+      OLLAMA_URL: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
       MCP_TRANSPORT: sse
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "8000"
