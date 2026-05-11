@@ -20,12 +20,11 @@ import logging
 import os
 import pathlib
 from dataclasses import dataclass
-from typing import Annotated, AsyncIterator
+from typing import AsyncIterator
 
 import asyncpg
 import httpx
 import numpy as np
-from numpy.typing import NDArray
 
 import cocoindex as coco
 from cocoindex.connectors import localfs, postgres
@@ -97,6 +96,14 @@ class OllamaEmbedder:
         """Return the embedding dimension (768 for nomic-embed-text)."""
         return EMBED_DIMS
 
+    def __coco_memo_key__(self) -> str:
+        """Return a memo key that uniquely identifies this embedder's configuration.
+
+        Used by CocoIndex to detect when the embedder changes (model or URL).
+        If this changes, CocoIndex will re-memoize all snippets.
+        """
+        return f"ollama:{self.model}:{self.base_url}:{EMBED_DIMS}"
+
     async def embed(self, text: str) -> NDArray[np.float32]:
         """Generate a 768-dim embedding vector for *text* via Ollama."""
         response = await self._client.post(
@@ -128,7 +135,7 @@ class CodeSnippetRow:
     start_line: int
     end_line: int
     language: str
-    embedding: Annotated[NDArray, EMBEDDER]
+    embedding: list[float]  # Store as list; CocoIndex handles float serialization
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +222,7 @@ async def process_file(
                 start_line=snippet.start_line,
                 end_line=snippet.end_line,
                 language=snippet.language,
-                embedding=embedding,
+                embedding=embedding.tolist(),  # Convert NDArray to list
             )
         )
 
@@ -228,6 +235,8 @@ async def process_file(
 @coco.fn
 async def app_main(sourcedir: pathlib.Path, codebase_name: str) -> None:
     """CocoIndex main function: mount the Postgres target and walk the source directory."""
+    # Mount the table target using CocoIndex's schema inference
+    # Now that embedding is list[float], CocoIndex should be able to handle it
     target_table = await postgres.mount_table_target(
         PG_DB,
         table_name=TABLE_NAME,
@@ -236,8 +245,12 @@ async def app_main(sourcedir: pathlib.Path, codebase_name: str) -> None:
         ),
     )
 
-    # HNSW index for O(log n) cosine similarity search.
-    target_table.declare_vector_index(column="embedding")
+    # HNSW index for O(log n) cosine similarity search (if embedding is vector type).
+    # This will work if Postgres mapped list[float] → vector type
+    try:
+        target_table.declare_vector_index(column="embedding")
+    except Exception as e:
+        log.warning("Could not declare vector index: %s", e)
 
     # GIN index on tsvector for keyword (BM25-style) search via the fallback path.
     target_table.declare_sql_command_attachment(

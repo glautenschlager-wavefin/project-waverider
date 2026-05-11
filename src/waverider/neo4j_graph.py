@@ -337,3 +337,309 @@ class Neo4jGraphManager:
             "classes": classes,
             "relationships": relationships,
         }
+
+    def populate_from_coco(self, codebase_name: str, db) -> Dict[str, int]:
+        """Populate Neo4j from code snippets in the database.
+
+        Works with either:
+        - New CocoIndex table (coco_snippets) if it exists
+        - Fallback to old schema tables (code_snippets, source_files) if coco table not found
+
+        Args:
+            codebase_name: Name of the codebase to populate
+            db: DatabaseManager instance
+
+        Returns:
+            Dictionary with counts: files, functions, classes, imports
+        """
+        import re
+
+        # Ensure codebase node exists
+        self.add_codebase(name=codebase_name, path="", description="")
+
+        stats = {"files": 0, "functions": 0, "classes": 0, "imports": 0}
+
+        # Check which schema to use
+        use_coco_table = db.coco_table_exists()
+
+        if use_coco_table:
+            return self._populate_from_coco_table(codebase_name, db, stats)
+        else:
+            return self._populate_from_old_schema(codebase_name, db, stats)
+
+    def _populate_from_coco_table(self, codebase_name: str, db, stats: Dict) -> Dict[str, int]:
+        """Populate Neo4j from the new coco_snippets table."""
+        import re
+
+        # Get all unique files for this codebase from coco_snippets
+        with db.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT file_path, language FROM coco_snippets
+                    WHERE codebase_name = %s
+                    ORDER BY file_path
+                    """,
+                    (codebase_name,),
+                )
+                files = cur.fetchall()
+
+        # Group snippets by file
+        files_by_path: Dict[str, List[Dict]] = {}
+        for file_path, language in files:
+            files_by_path[file_path] = []
+
+            # Get all snippets for this file
+            with db.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT id, snippet_type, name, content, start_line, end_line, language
+                        FROM coco_snippets
+                        WHERE codebase_name = %s AND file_path = %s
+                        ORDER BY start_line
+                        """,
+                        (codebase_name, file_path),
+                    )
+                    rows = cur.fetchall()
+
+            files_by_path[file_path] = [
+                {
+                    "id": row[0],
+                    "snippet_type": row[1],
+                    "name": row[2],
+                    "content": row[3],
+                    "start_line": row[4],
+                    "end_line": row[5],
+                    "language": row[6],
+                }
+                for row in rows
+            ]
+
+        # Add file nodes
+        for file_path, snippets_list in files_by_path.items():
+            language = snippets_list[0]["language"] if snippets_list else "unknown"
+            self.add_code_file(codebase_name, file_path, language, content_hash="")
+            stats["files"] += 1
+
+            # Add function/class nodes from snippets
+            for snippet in snippets_list:
+                if snippet["snippet_type"] == "function":
+                    self.add_function(
+                        file_path=file_path,
+                        function_name=snippet["name"],
+                        language=snippet["language"],
+                        signature="",
+                        docstring="",
+                    )
+                    stats["functions"] += 1
+                elif snippet["snippet_type"] == "class":
+                    self.add_class(
+                        file_path=file_path,
+                        class_name=snippet["name"],
+                        language=snippet["language"],
+                        parent_class=None,
+                        docstring="",
+                    )
+                    stats["classes"] += 1
+
+        # Extract and add relationships (imports, function calls)
+        for file_path, snippets_list in files_by_path.items():
+            for snippet in snippets_list:
+                content = snippet["content"]
+                language = snippet["language"]
+
+                # Extract imports
+                import_patterns = self._extract_imports(content, language)
+                stats["imports"] += len(import_patterns)
+
+                # Extract function calls
+                if snippet["snippet_type"] == "function":
+                    call_patterns = self._extract_function_calls(content, language)
+                    for called_func in call_patterns:
+                        try:
+                            self.add_function_call(
+                                caller_name=snippet["name"], callee_name=called_func
+                            )
+                        except Exception:
+                            pass
+
+        return stats
+
+    def _populate_from_old_schema(self, codebase_name: str, db, stats: Dict) -> Dict[str, int]:
+        """Populate Neo4j from the old schema (code_snippets + source_files tables)."""
+        import re
+
+        # Get codebase ID
+        with db.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM codebase_metadata WHERE name = %s", (codebase_name,))
+                result = cur.fetchone()
+                if not result:
+                    return stats
+                codebase_id = result[0]
+
+        # Get all files in this codebase
+        with db.pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, file_path FROM source_files WHERE codebase_id = %s ORDER BY file_path",
+                    (codebase_id,),
+                )
+                files = cur.fetchall()
+
+        files_by_path: Dict[str, List[Dict]] = {}
+        for file_id, file_path in files:
+            # Get all snippets for this file
+            with db.pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT snippet_type, name, content, start_line, end_line, language
+                        FROM code_snippets
+                        WHERE source_file_id = %s
+                        ORDER BY start_line
+                        """,
+                        (file_id,),
+                    )
+                    rows = cur.fetchall()
+
+            files_by_path[file_path] = [
+                {
+                    "snippet_type": row[0],
+                    "name": row[1],
+                    "content": row[2],
+                    "start_line": row[3],
+                    "end_line": row[4],
+                    "language": row[5],
+                }
+                for row in rows
+            ]
+
+        # Add file nodes
+        for file_path, snippets_list in files_by_path.items():
+            language = snippets_list[0]["language"] if snippets_list else "unknown"
+            self.add_code_file(codebase_name, file_path, language, content_hash="")
+            stats["files"] += 1
+
+            # Add function/class nodes
+            for snippet in snippets_list:
+                if snippet["snippet_type"] == "function":
+                    self.add_function(
+                        file_path=file_path,
+                        function_name=snippet["name"],
+                        language=snippet["language"],
+                        signature="",
+                        docstring="",
+                    )
+                    stats["functions"] += 1
+                elif snippet["snippet_type"] == "class":
+                    self.add_class(
+                        file_path=file_path,
+                        class_name=snippet["name"],
+                        language=snippet["language"],
+                        parent_class=None,
+                        docstring="",
+                    )
+                    stats["classes"] += 1
+
+        # Extract relationships
+        for file_path, snippets_list in files_by_path.items():
+            for snippet in snippets_list:
+                content = snippet["content"]
+                language = snippet["language"]
+
+                # Extract imports
+                import_patterns = self._extract_imports(content, language)
+                stats["imports"] += len(import_patterns)
+
+                # Extract function calls
+                if snippet["snippet_type"] == "function":
+                    call_patterns = self._extract_function_calls(content, language)
+                    for called_func in call_patterns:
+                        try:
+                            self.add_function_call(
+                                caller_name=snippet["name"], callee_name=called_func
+                            )
+                        except Exception:
+                            pass
+
+        return stats
+
+    def _extract_imports(self, content: str, language: str) -> List[str]:
+        """Extract import statements from code.
+
+        Args:
+            content: Code content
+            language: Programming language
+
+        Returns:
+            List of imported module names
+        """
+        imports = []
+
+        if language == "python":
+            # Match: import X, from X import Y, from X import Y as Z
+            patterns = [
+                r"^\s*import\s+([\w.]+)",  # import module
+                r"^\s*from\s+([\w.]+)\s+import",  # from module import
+            ]
+        elif language in ("javascript", "typescript", "jsx", "tsx"):
+            # Match: import X from 'Y', import { X } from 'Y'
+            patterns = [r"import\s+.*from\s+['\"]([^'\"]+)['\"]"]
+        else:
+            return []
+
+        for line in content.split("\n"):
+            for pattern in patterns:
+                match = re.search(pattern, line)
+                if match:
+                    imports.append(match.group(1))
+
+        return list(set(imports))  # Remove duplicates
+
+    def _extract_function_calls(self, content: str, language: str) -> List[str]:
+        """Extract function call names from code.
+
+        Args:
+            content: Code content
+            language: Programming language
+
+        Returns:
+            List of called function names
+        """
+        calls = []
+
+        if language == "python":
+            # Match: function_name( or self.method_name( or obj.method(
+            pattern = r"(?:^|\s|\.)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\("
+        elif language in ("javascript", "typescript", "jsx", "tsx"):
+            # Match: functionName( or obj.method(
+            pattern = r"(?:^|\s|\.)\s*([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\("
+        else:
+            return []
+
+        for line in content.split("\n"):
+            # Skip comments
+            if line.strip().startswith("#") or line.strip().startswith("//"):
+                continue
+            matches = re.findall(pattern, line)
+            calls.extend(matches)
+
+        # Filter out common keywords
+        keywords = {
+            "if",
+            "for",
+            "while",
+            "return",
+            "assert",
+            "print",
+            "len",
+            "range",
+            "int",
+            "str",
+            "list",
+            "dict",
+            "set",
+        }
+        return [c for c in set(calls) if c not in keywords]
