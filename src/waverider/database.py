@@ -67,7 +67,6 @@ def tokenize_code_identifiers(text: str) -> str:
 
 _SCHEMA_SQL = """\
 CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS pg_bm25;
 
 CREATE TABLE IF NOT EXISTS codebase_metadata (
     id          BIGSERIAL PRIMARY KEY,
@@ -135,9 +134,8 @@ CREATE TABLE IF NOT EXISTS index_runs (
 """
 
 # pg_bm25 (ParadeDB) BM25 index over code_snippets.
-# The 'code' tokenizer splits camelCase/snake_case identifiers so that
-# searching for 'database' finds 'DatabaseManager', replacing the SQLite
-# tokenize_code_identifiers pre-processing that was done at insert time.
+# ParadeDB is a Postgres distribution that includes pg_bm25 for BM25 search.
+# If pg_bm25 is not available, we fall back to tsvector + GIN for keyword search.
 _BM25_INDEX_SQL = """\
 CREATE INDEX IF NOT EXISTS code_snippets_bm25 ON code_snippets
 USING bm25(id, name, content, language)
@@ -145,6 +143,13 @@ WITH (
     key_field   = 'id',
     text_fields = '{"name": {"tokenizer": {"type": "code"}}, "content": {"tokenizer": {"type": "code"}}, "language": {"tokenizer": {"type": "keyword"}}}'
 );
+"""
+
+# Fallback: Postgres native tsvector + GIN index for keyword search
+# Used when pg_bm25 is not available
+_TSVECTOR_INDEX_SQL = """\
+ALTER TABLE code_snippets ADD COLUMN IF NOT EXISTS content_tsvector tsvector GENERATED ALWAYS AS (to_tsvector('english', name || ' ' || content)) STORED;
+CREATE INDEX IF NOT EXISTS idx_code_snippets_tsvector ON code_snippets USING GIN(content_tsvector);
 """
 
 
@@ -176,11 +181,34 @@ class DatabaseManager:
 
     def init_schema(self) -> None:
         with self._conn() as conn:
-            conn.execute(_SCHEMA_SQL)
+            # Execute base schema (may contain multiple statements)
+            for stmt in _SCHEMA_SQL.split(';'):
+                stmt = stmt.strip()
+                if stmt:
+                    conn.execute(stmt)
+            conn.commit()
+            
+            # Try pg_bm25 first (ParadeDB feature), fall back to tsvector
             try:
-                conn.execute(_BM25_INDEX_SQL)
+                for stmt in _BM25_INDEX_SQL.split(';'):
+                    stmt = stmt.strip()
+                    if stmt:
+                        conn.execute(stmt)
+                conn.commit()
+                log.info("Using pg_bm25 for BM25 search")
             except Exception as e:
-                log.warning("Could not create BM25 index (pg_bm25 may not be installed): %s", e)
+                conn.rollback()
+                log.warning("pg_bm25 not available, using tsvector fallback: %s", e)
+                try:
+                    for stmt in _TSVECTOR_INDEX_SQL.split(';'):
+                        stmt = stmt.strip()
+                        if stmt:
+                            conn.execute(stmt)
+                    conn.commit()
+                    log.info("Using tsvector + GIN for keyword search")
+                except Exception as e2:
+                    conn.rollback()
+                    log.warning("tsvector index creation also failed: %s", e2)
 
     def add_codebase(
         self, name: str, path: str, description: str = "", language: str = "mixed"
@@ -257,7 +285,7 @@ class DatabaseManager:
             row = conn.execute(
                 """
                 INSERT INTO embeddings (snippet_id, model, embedding_vector)
-                VALUES (%s, %s, %s)
+                VALUES (%s, %s, %s::vector)
                 ON CONFLICT (snippet_id, model) DO UPDATE SET
                     embedding_vector = EXCLUDED.embedding_vector
                 RETURNING id
@@ -274,43 +302,77 @@ class DatabaseManager:
         codebase_id: int,
         limit: int = 20,
     ) -> List[Dict[str, Any]]:
-        """BM25 keyword search via pg_bm25 (ParadeDB).
-
-        The 'code' tokenizer on the index handles camelCase/snake_case splitting
-        at both index and query time, so 'database' finds 'DatabaseManager'.
+        """Keyword search for code snippets.
+        
+        Tries pg_bm25 (ParadeDB) first for true BM25 ranking.
+        Falls back to tsvector + GIN if pg_bm25 is not available.
         """
-        # Strip characters that are special in ParadeDB query syntax
         safe_query = re.sub(r"[^\w\s]", " ", query).strip()
         if not safe_query:
             return []
         tokens = list(dict.fromkeys(re.findall(r"\w+", safe_query)))
         if not tokens:
             return []
-        bm25_query = " OR ".join(f"name:{t} OR content:{t}" for t in tokens)
 
         with self._conn() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    cs.id,
-                    cs.name,
-                    cs.snippet_type,
-                    cs.content,
-                    sf.relative_path       AS file_path,
-                    cs.start_line,
-                    cs.end_line,
-                    cs.language,
-                    paradedb.score(cs.id)  AS bm25_score
-                FROM code_snippets cs
-                JOIN source_files sf ON cs.file_id = sf.id
-                WHERE cs.id @@@ paradedb.parse(%s)
-                  AND sf.codebase_id = %s
-                ORDER BY bm25_score DESC
-                LIMIT %s
-                """,
-                (bm25_query, codebase_id, limit),
-            ).fetchall()
-        return [dict(r) for r in rows]
+            # Try pg_bm25 first (ParadeDB)
+            try:
+                bm25_query = " OR ".join(f"name:{t} OR content:{t}" for t in tokens)
+                rows = conn.execute(
+                    """
+                    SELECT
+                        cs.id,
+                        cs.name,
+                        cs.snippet_type,
+                        cs.content,
+                        sf.relative_path       AS file_path,
+                        cs.start_line,
+                        cs.end_line,
+                        cs.language,
+                        paradedb.score(cs.id)  AS bm25_score
+                    FROM code_snippets cs
+                    JOIN source_files sf ON cs.file_id = sf.id
+                    WHERE cs.id @@@ paradedb.parse(%s)
+                      AND sf.codebase_id = %s
+                    ORDER BY bm25_score DESC
+                    LIMIT %s
+                    """,
+                    (bm25_query, codebase_id, limit),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            except Exception as e:
+                conn.rollback()
+                log.debug("pg_bm25 search failed, falling back to tsvector: %s", e)
+
+            # Fallback to tsvector + GIN
+            try:
+                # Build tsvector query from tokens
+                ts_query = " | ".join(f"'{t}'" for t in tokens)
+                rows = conn.execute(
+                    """
+                    SELECT
+                        cs.id,
+                        cs.name,
+                        cs.snippet_type,
+                        cs.content,
+                        sf.relative_path       AS file_path,
+                        cs.start_line,
+                        cs.end_line,
+                        cs.language,
+                        ts_rank(content_tsvector, plainto_tsquery(%s)) AS bm25_score
+                    FROM code_snippets cs
+                    JOIN source_files sf ON cs.file_id = sf.id
+                    WHERE content_tsvector @@ plainto_tsquery(%s)
+                      AND sf.codebase_id = %s
+                    ORDER BY bm25_score DESC
+                    LIMIT %s
+                    """,
+                    (safe_query, safe_query, codebase_id, limit),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            except Exception as e:
+                log.warning("Both pg_bm25 and tsvector searches failed: %s", e)
+                return []
 
     def search_embeddings(
         self,
@@ -332,13 +394,13 @@ class DatabaseManager:
                     cs.start_line,
                     cs.end_line,
                     cs.language,
-                    ROUND((1 - (e.embedding_vector <=> %s))::numeric, 4) AS similarity
+                    ROUND((1 - (e.embedding_vector <=> %s::vector))::numeric, 4) AS similarity
                 FROM embeddings e
                 JOIN code_snippets cs ON e.snippet_id = cs.id
                 JOIN source_files sf  ON cs.file_id   = sf.id
                 WHERE sf.codebase_id = %s
-                  AND (1 - (e.embedding_vector <=> %s)) >= %s
-                ORDER BY e.embedding_vector <=> %s
+                  AND (1 - (e.embedding_vector <=> %s::vector)) >= %s
+                ORDER BY e.embedding_vector <=> %s::vector
                 LIMIT %s
                 """,
                 (query_embedding, codebase_id, query_embedding, threshold, query_embedding, limit),
