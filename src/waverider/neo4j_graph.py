@@ -48,20 +48,27 @@ class Neo4jGraphManager:
         self._init_driver()
 
     def _init_driver(self):
-        """Initialize Neo4j driver with graceful fallback for auth issues."""
+        """Initialize Neo4j driver."""
         try:
             from neo4j import GraphDatabase
+            from neo4j.exceptions import AuthError, ServiceUnavailable
 
             self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
-            print("✓ Neo4j Bolt driver created")
+            self.driver.verify_connectivity()
+            print("Connected to Neo4j")
         except ImportError:
             raise ImportError("neo4j package not found. Install with: pip install neo4j")
+        except AuthError as e:
+            raise PermissionError(
+                "Neo4j authentication failed. Check that NEO4J_USER/NEO4J_PASSWORD match "
+                "the credentials configured inside the running Neo4j server. "
+                "Setting an environment variable only configures the Waverider client; it does not "
+                "set the server password."
+            ) from e
+        except ServiceUnavailable as e:
+            raise ConnectionError(f"Failed to connect to Neo4j: {e}") from e
         except Exception as e:
-            import warnings
-            warnings.warn(f"Neo4j driver initialization failed: {e}. "
-                         f"Graph queries may be unavailable. "
-                         f"This usually indicates a Bolt protocol or auth mismatch with the Neo4j server.")
-            self.driver = None
+            raise ConnectionError(f"Failed to connect to Neo4j: {e}") from e
 
     def close(self):
         """Close Neo4j connection."""
@@ -70,10 +77,6 @@ class Neo4jGraphManager:
 
     def init_schema(self) -> None:
         """Initialize Neo4j schema with constraints."""
-        if not self.driver:
-            print("⚠ Neo4j driver not available - skipping schema initialization")
-            return
-        
         with self.driver.session() as session:
             # Create node labels and constraints
             queries = [
@@ -250,13 +253,8 @@ class Neo4jGraphManager:
             **params: Query parameters
 
         Returns:
-            List of result records (empty if driver unavailable)
+            List of result records
         """
-        if not self.driver:
-            import warnings
-            warnings.warn("Neo4j driver not available - cannot execute query")
-            return []
-        
         with self.driver.session() as session:
             result = session.run(cypher, params)
             return [dict(record) for record in result]
