@@ -37,32 +37,38 @@ def search_codebase(query: str, codebase_name: str = "waverider", limit: int = 1
         from waverider.neo4j_graph import Neo4jGraphManager
 
         neo4j = Neo4jGraphManager()
-        results = neo4j.query(
-            """
-            MATCH (cb:Codebase {name: $codebase_name})-[:CONTAINS_FILE]->(f:CodeFile)
-            WITH f
-            OPTIONAL MATCH (f)-[:CONTAINS_FUNCTION]->(fn:Function)
-            WITH f, collect(DISTINCT fn) AS funcs
-            OPTIONAL MATCH (f)-[:CONTAINS_CLASS]->(cl:Class)
-            WITH f, funcs, collect(DISTINCT cl) AS classes
-            WHERE toLower(f.path) CONTAINS toLower($term)
-               OR any(fn IN funcs WHERE toLower(fn.name) CONTAINS toLower($term))
-               OR any(cl IN classes WHERE toLower(cl.name) CONTAINS toLower($term))
-            RETURN
-              f.path AS file,
-              [fn IN funcs WHERE toLower(fn.name) CONTAINS toLower($term) | {name: fn.name, signature: fn.signature, docstring: fn.docstring}] AS matched_functions,
-              [cl IN classes WHERE toLower(cl.name) CONTAINS toLower($term) | {name: cl.name, docstring: cl.docstring}] AS matched_classes,
-              [fn IN funcs | fn.name] AS all_functions,
-              [cl IN classes | cl.name] AS all_classes
-            LIMIT $limit
-            """,
-            term=query,
-            limit=limit,
-            codebase_name=codebase_name,
-        )
-        neo4j.close()
+        
+        # Try to connect and run the query
+        try:
+            results = neo4j.query(
+                """
+                MATCH (cb:Codebase {name: $codebase_name})-[:CONTAINS_FILE]->(f:CodeFile)
+                WITH f
+                OPTIONAL MATCH (f)-[:CONTAINS_FUNCTION]->(fn:Function)
+                WITH f, collect(DISTINCT fn) AS funcs
+                OPTIONAL MATCH (f)-[:CONTAINS_CLASS]->(cl:Class)
+                WITH f, funcs, collect(DISTINCT cl) AS classes
+                WHERE toLower(f.path) CONTAINS toLower($term)
+                   OR any(fn IN funcs WHERE toLower(fn.name) CONTAINS toLower($term))
+                   OR any(cl IN classes WHERE toLower(cl.name) CONTAINS toLower($term))
+                RETURN
+                  f.path AS file,
+                  [fn IN funcs WHERE toLower(fn.name) CONTAINS toLower($term) | {name: fn.name, signature: fn.signature, docstring: fn.docstring}] AS matched_functions,
+                  [cl IN classes WHERE toLower(cl.name) CONTAINS toLower($term) | {name: cl.name, docstring: cl.docstring}] AS matched_classes,
+                  [fn IN funcs | fn.name] AS all_functions,
+                  [cl IN classes | cl.name] AS all_classes
+                LIMIT $limit
+                """,
+                term=query,
+                limit=limit,
+                codebase_name=codebase_name,
+            )
+        finally:
+            neo4j.close()
+            
         if not results:
-            return f"No results found for '{query}' in codebase '{codebase_name}'."
+            return f"No results found for '{query}' in codebase '{codebase_name}' (or Neo4j graph not populated — run: poetry run python scripts/build_index.py --codebase-path /path/to/{codebase_name} --index-name {codebase_name} --use-neo4j)."
+        
         lines = [f"Found {len(results)} file(s) matching '{query}':"]
         for r in results:
             lines.append(f"\n  File: {r['file']}")
@@ -85,7 +91,7 @@ def search_codebase(query: str, codebase_name: str = "waverider", limit: int = 1
             lines.append(f"    All classes:   {', '.join(r['all_classes']) or '(none)'}")
         return "\n".join(lines)
     except Exception as e:
-        return f"Search error: {e}"
+        return f"Neo4j search unavailable: {e}. The knowledge graph may not be populated. Run: poetry run python scripts/build_index.py --codebase-path /path/to/codebase --index-name codebase_name --use-neo4j"
 
 
 @mcp.tool()
@@ -102,15 +108,23 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
     """
     try:
         import httpx
-        import asyncio
-        import numpy as np
         from waverider.database import DatabaseManager
         from waverider.fusion import rrf_fuse
 
         db = DatabaseManager()
 
-        # Check that the CocoIndex table exists (i.e. at least one indexing run completed).
-        if not db.coco_table_exists():
+        # Get codebase and check that it has been indexed.
+        codebase = db.get_codebase(codebase_name)
+        if not codebase:
+            return (
+                f"Codebase '{codebase_name}' not found. "
+                "Run: poetry run python scripts/build_index.py "
+                f"--codebase-path /path/to/{codebase_name} --index-name {codebase_name}"
+            )
+        
+        codebase_id = codebase["id"]
+        stats = db.get_statistics(codebase_id)
+        if stats.get("total_snippets", 0) == 0:
             return (
                 f"Codebase '{codebase_name}' has not been indexed yet. "
                 "Run: poetry run python scripts/build_index.py "
@@ -135,17 +149,33 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
                 "Start Ollama with: ollama serve"
             )
 
-        # Hybrid search: vector similarity + tsvector keyword, fused with RRF.
-        vector_results = db.search_coco_embeddings(
-            query_embedding=query_vec,
-            codebase_name=codebase_name,
-            limit=limit * 2,
-        )
-        keyword_results = db.search_coco_bm25(
-            query=query,
-            codebase_name=codebase_name,
-            limit=limit * 2,
-        )
+        # Hybrid search: Try coco_snippets first (Phase 2), fall back to old schema (Phase 1.1).
+        use_coco = db.coco_table_exists() and stats.get("coco_row_count", 0) > 0
+        
+        if use_coco:
+            # Phase 2: CocoIndex schema
+            vector_results = db.search_coco_embeddings(
+                query_embedding=query_vec,
+                codebase_name=codebase_name,
+                limit=limit * 2,
+            )
+            keyword_results = db.search_coco_bm25(
+                query=query,
+                codebase_name=codebase_name,
+                limit=limit * 2,
+            )
+        else:
+            # Phase 1.1: Old schema (code_snippets + embeddings)
+            vector_results = db.search_embeddings(
+                query_embedding=query_vec,
+                codebase_id=codebase_id,
+                limit=limit * 2,
+            )
+            keyword_results = db.search_bm25(
+                query=query,
+                codebase_id=codebase_id,
+                limit=limit * 2,
+            )
 
         fused = rrf_fuse(
             {"vector": vector_results, "keyword": keyword_results},
