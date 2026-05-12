@@ -1,6 +1,7 @@
 """Neo4j knowledge graph management for codebases."""
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -372,7 +373,7 @@ class Neo4jGraphManager:
         import re
 
         # Get all unique files for this codebase from coco_snippets
-        with db.pool.connection() as conn:
+        with db._conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -386,11 +387,12 @@ class Neo4jGraphManager:
 
         # Group snippets by file
         files_by_path: Dict[str, List[Dict]] = {}
-        for file_path, language in files:
+        for row in files:
+            file_path, language = row["file_path"], row["language"]
             files_by_path[file_path] = []
 
             # Get all snippets for this file
-            with db.pool.connection() as conn:
+            with db._conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
@@ -405,13 +407,13 @@ class Neo4jGraphManager:
 
             files_by_path[file_path] = [
                 {
-                    "id": row[0],
-                    "snippet_type": row[1],
-                    "name": row[2],
-                    "content": row[3],
-                    "start_line": row[4],
-                    "end_line": row[5],
-                    "language": row[6],
+                    "id": row["id"],
+                    "snippet_type": row["snippet_type"],
+                    "name": row["name"],
+                    "content": row["content"],
+                    "start_line": row["start_line"],
+                    "end_line": row["end_line"],
+                    "language": row["language"],
                 }
                 for row in rows
             ]
@@ -471,16 +473,16 @@ class Neo4jGraphManager:
         import re
 
         # Get codebase ID
-        with db.pool.connection() as conn:
+        with db._conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT id FROM codebase_metadata WHERE name = %s", (codebase_name,))
                 result = cur.fetchone()
                 if not result:
                     return stats
-                codebase_id = result[0]
+                codebase_id = result["id"]
 
         # Get all files in this codebase
-        with db.pool.connection() as conn:
+        with db._conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id, file_path FROM source_files WHERE codebase_id = %s ORDER BY file_path",
@@ -489,15 +491,16 @@ class Neo4jGraphManager:
                 files = cur.fetchall()
 
         files_by_path: Dict[str, List[Dict]] = {}
-        for file_id, file_path in files:
+        for row in files:
+            file_id, file_path = row["id"], row["file_path"]
             # Get all snippets for this file
-            with db.pool.connection() as conn:
+            with db._conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
                         SELECT snippet_type, name, content, start_line, end_line, language
                         FROM code_snippets
-                        WHERE source_file_id = %s
+                        WHERE file_id = %s
                         ORDER BY start_line
                         """,
                         (file_id,),
@@ -506,12 +509,12 @@ class Neo4jGraphManager:
 
             files_by_path[file_path] = [
                 {
-                    "snippet_type": row[0],
-                    "name": row[1],
-                    "content": row[2],
-                    "start_line": row[3],
-                    "end_line": row[4],
-                    "language": row[5],
+                    "snippet_type": row["snippet_type"],
+                    "name": row["name"],
+                    "content": row["content"],
+                    "start_line": row["start_line"],
+                    "end_line": row["end_line"],
+                    "language": row["language"],
                 }
                 for row in rows
             ]
