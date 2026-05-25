@@ -1,0 +1,252 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.3, pytest-8.4.2, pluggy-1.6.0 -- /Users/glautenschlager/Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/glautenschlager/dev/project waverider
+configfile: pyproject.toml
+plugins: anyio-4.12.1, asyncio-0.26.0
+asyncio: mode=Mode.AUTO, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 23 items
+
+tests/test_database.py::TestTokenizeCodeIdentifiers::test_snake_case PASSED [  4%]
+tests/test_database.py::TestTokenizeCodeIdentifiers::test_camel_case PASSED [  8%]
+tests/test_database.py::TestTokenizeCodeIdentifiers::test_pascal_case_multiple_caps PASSED [ 13%]
+tests/test_database.py::TestTokenizeCodeIdentifiers::test_dot_path PASSED [ 17%]
+tests/test_database.py::TestTokenizeCodeIdentifiers::test_combined PASSED [ 21%]
+tests/test_database.py::TestTokenizeCodeIdentifiers::test_short_tokens_skipped PASSED [ 26%]
+tests/test_database.py::TestTokenizeCodeIdentifiers::test_no_splitting_needed PASSED [ 30%]
+tests/test_database.py::TestTokenizeCodeIdentifiers::test_preserves_original PASSED [ 34%]
+tests/test_database.py::test_init_schema_is_idempotent ERROR             [ 39%]
+tests/test_database.py::test_add_codebase ERROR                          [ 43%]
+tests/test_database.py::test_list_codebases ERROR                        [ 47%]
+tests/test_database.py::test_add_codebase_is_idempotent ERROR            [ 52%]
+tests/test_database.py::test_add_source_file_is_idempotent ERROR         [ 56%]
+tests/test_database.py::test_reset_codebase_contents ERROR               [ 60%]
+tests/test_database.py::test_delete_file_contents ERROR                  [ 65%]
+tests/test_database.py::test_delete_source_file ERROR                    [ 69%]
+tests/test_database.py::test_get_file_hashes ERROR                       [ 73%]
+tests/test_database.py::TestBM25Search::test_exact_name_match ERROR      [ 78%]
+tests/test_database.py::TestBM25Search::test_sub_token_match ERROR       [ 82%]
+tests/test_database.py::TestBM25Search::test_snake_case_partial ERROR    [ 86%]
+tests/test_database.py::TestBM25Search::test_bm25_score_present ERROR    [ 91%]
+tests/test_database.py::TestBM25Search::test_no_results ERROR            [ 95%]
+tests/test_database.py::test_vector_search ERROR                         [100%]
+
+==================================== ERRORS ====================================
+_______________ ERROR at setup of test_init_schema_is_idempotent _______________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+_____________________ ERROR at setup of test_add_codebase ______________________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+____________________ ERROR at setup of test_list_codebases _____________________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+______________ ERROR at setup of test_add_codebase_is_idempotent _______________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+_____________ ERROR at setup of test_add_source_file_is_idempotent _____________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+________________ ERROR at setup of test_reset_codebase_contents ________________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+_________________ ERROR at setup of test_delete_file_contents __________________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+__________________ ERROR at setup of test_delete_source_file ___________________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+____________________ ERROR at setup of test_get_file_hashes ____________________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+____________ ERROR at setup of TestBM25Search.test_exact_name_match ____________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+____________ ERROR at setup of TestBM25Search.test_sub_token_match _____________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+___________ ERROR at setup of TestBM25Search.test_snake_case_partial ___________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+___________ ERROR at setup of TestBM25Search.test_bm25_score_present ___________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+_______________ ERROR at setup of TestBM25Search.test_no_results _______________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+_____________________ ERROR at setup of test_vector_search _____________________
+tests/test_database.py:48: in db
+    conn.execute("DELETE FROM codebase_metadata")
+../../Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/psycopg/connection.py:300: in execute
+    raise ex.with_traceback(None)
+E   psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+E   LINE 1: DELETE FROM codebase_metadata
+E                       ^
+------------------------------ Captured log setup ------------------------------
+WARNING  waverider.database:database.py:190 pg_bm25 not available, using tsvector fallback: field config should be valid for SearchFieldConfig::name: unknown tokenizer type: code
+WARNING  waverider.database:database.py:195 tsvector index creation also failed: current transaction is aborted, commands ignored until end of transaction block
+=============================== warnings summary ===============================
+tests/test_database.py::TestTokenizeCodeIdentifiers::test_snake_case
+  /Users/glautenschlager/Library/Caches/pypoetry/virtualenvs/waverider-ngsQAueu-py3.14/lib/python3.14/site-packages/pytest_asyncio/plugin.py:1216: DeprecationWarning: 'asyncio.get_event_loop_policy' is deprecated and slated for removal in Python 3.16
+    return asyncio.get_event_loop_policy()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+ERROR tests/test_database.py::test_init_schema_is_idempotent - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::test_add_codebase - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::test_list_codebases - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::test_add_codebase_is_idempotent - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::test_add_source_file_is_idempotent - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::test_reset_codebase_contents - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::test_delete_file_contents - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::test_delete_source_file - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::test_get_file_hashes - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::TestBM25Search::test_exact_name_match - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::TestBM25Search::test_sub_token_match - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::TestBM25Search::test_snake_case_partial - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::TestBM25Search::test_bm25_score_present - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::TestBM25Search::test_no_results - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+ERROR tests/test_database.py::test_vector_search - psycopg.errors.UndefinedTable: relation "codebase_metadata" does not exist
+LINE 1: DELETE FROM codebase_metadata
+                    ^
+=================== 8 passed, 1 warning, 15 errors in 1.11s ====================
