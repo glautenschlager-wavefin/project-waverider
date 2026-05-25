@@ -580,3 +580,57 @@ class DatabaseManager:
                 (self._COCO_TABLE,),
             ).fetchone()
         return row is not None and row["t"] is not None
+
+    def search_symbols_by_name(
+        self,
+        query: str,
+        codebase_id: int,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Search for files, functions, and classes by name matching.
+        
+        This is a symbol-focused search that prioritizes exact/prefix name matches
+        over full-text content search. Useful for IDE-like lookups.
+        
+        Returns snippets with matched_type indicating whether it matched a file path,
+        function name, or class name.
+        """
+        # Escape SQL LIKE wildcards: % -> %%, _ -> \_
+        safe_query = f"%{query.lower().replace('%', '%%').replace('_', r'\_')}%"
+        
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    cs.id,
+                    cs.name,
+                    cs.snippet_type,
+                    cs.content,
+                    sf.relative_path        AS file_path,
+                    cs.start_line,
+                    cs.end_line,
+                    cs.language,
+                    CASE
+                        WHEN LOWER(sf.relative_path) LIKE %s ESCAPE '\' THEN 'file'
+                        WHEN cs.snippet_type = 'function' AND LOWER(cs.name) LIKE %s ESCAPE '\' THEN 'function'
+                        WHEN cs.snippet_type = 'class' AND LOWER(cs.name) LIKE %s ESCAPE '\' THEN 'class'
+                        ELSE 'content'
+                    END AS match_type,
+                    CASE
+                        WHEN LOWER(sf.relative_path) LIKE %s ESCAPE '\' THEN 1
+                        WHEN LOWER(cs.name) LIKE %s ESCAPE '\' THEN 2
+                        ELSE 3
+                    END AS match_priority
+                FROM code_snippets cs
+                JOIN source_files sf ON cs.file_id = sf.id
+                WHERE sf.codebase_id = %s
+                  AND (
+                    LOWER(sf.relative_path) LIKE %s ESCAPE '\'
+                    OR LOWER(cs.name) LIKE %s ESCAPE '\'
+                  )
+                ORDER BY match_priority ASC, cs.name ASC
+                LIMIT %s
+                """,
+                (safe_query, safe_query, safe_query, safe_query, safe_query, codebase_id, safe_query, safe_query, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]

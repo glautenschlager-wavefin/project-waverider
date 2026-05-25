@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# Index multiple Wave codebases
+# Index multiple Wave codebases — Phase 4 (CocoIndex incremental by default)
+#
+# Usage:
+#   ./scripts/index_wave_repos.sh              # incremental (default)
+#   ./scripts/index_wave_repos.sh --legacy     # use legacy manual indexer
+#   ./scripts/index_wave_repos.sh --use-neo4j  # also build Neo4j graph
 set -e
 
 WAVERIDER_DIR="/Users/glautenschlager/dev/project waverider"
 WAVE_SRC="/Users/glautenschlager/wave/src"
-EXCLUDE="node_modules .git __pycache__ .venv venv dist build .tox migrations static fixtures vendor .mypy_cache .pytest_cache htmlcov .coverage .next .turbo .cache site-packages include/python lib/python bin/python sitestatic"
+
+# Pass-through flags (e.g. --legacy, --use-neo4j, --full)
+EXTRA_FLAGS=("$@")
 
 cd "$WAVERIDER_DIR"
 
@@ -20,24 +27,14 @@ index_repo() {
 
   echo ""
   echo "################################################################"
-  echo "# Indexing (SQLite): $name"
+  echo "# Indexing: $name"
   echo "################################################################"
   poetry run python scripts/build_index.py \
     --codebase-path "$path" \
     --index-name "$name" \
     --description "$desc" \
-    --exclude $EXCLUDE \
-    --full
-  echo "Done (SQLite): $name"
-
-  echo ""
-  echo "# Indexing (Neo4j): $name"
-  poetry run python scripts/index_neo4j.py \
-    --codebase-path "$path" \
-    --index-name "$name" \
-    --description "$desc" \
-    --clear
-  echo "Done (Neo4j): $name"
+    "${EXTRA_FLAGS[@]}"
+  echo "Done: $name"
 }
 
 index_repo "identity" "Wave identity Python service"

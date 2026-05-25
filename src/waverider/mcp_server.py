@@ -7,6 +7,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+from waverider.config import get_config
+
 
 def _load_project_env() -> None:
     current_file = Path(__file__).resolve()
@@ -26,86 +28,159 @@ mcp = FastMCP(
 
 @mcp.tool()
 def search_codebase(query: str, codebase_name: str = "waverider", limit: int = 10) -> str:
-    """Search the Waverider codebase knowledge graph for functions, classes, and files matching a query.
+    """Search the codebase for functions, classes, and files matching a query.
+
+    Uses the configured search backend (Postgres or Neo4j) to find symbols.
+    Supports side-by-side validation during migration via WAVERIDER_SEARCH_BACKEND.
 
     Args:
         query: Keyword or name to search for (e.g. function name, class name, file name)
         codebase_name: Name of the indexed codebase (default: waverider)
         limit: Maximum number of results to return
-    """
-    try:
-        from waverider.neo4j_graph import Neo4jGraphManager
 
-        neo4j = Neo4jGraphManager()
-        
-        # Try to connect and run the query
-        try:
-            results = neo4j.query(
-                """
-                MATCH (cb:Codebase {name: $codebase_name})-[:CONTAINS_FILE]->(f:CodeFile)
-                WITH f
-                OPTIONAL MATCH (f)-[:CONTAINS_FUNCTION]->(fn:Function)
-                WITH f, collect(DISTINCT fn) AS funcs
-                OPTIONAL MATCH (f)-[:CONTAINS_CLASS]->(cl:Class)
-                WITH f, funcs, collect(DISTINCT cl) AS classes
-                WHERE toLower(f.path) CONTAINS toLower($term)
-                   OR any(fn IN funcs WHERE toLower(fn.name) CONTAINS toLower($term))
-                   OR any(cl IN classes WHERE toLower(cl.name) CONTAINS toLower($term))
-                RETURN
-                  f.path AS file,
-                  [fn IN funcs WHERE toLower(fn.name) CONTAINS toLower($term) | {name: fn.name, signature: fn.signature, docstring: fn.docstring}] AS matched_functions,
-                  [cl IN classes WHERE toLower(cl.name) CONTAINS toLower($term) | {name: cl.name, docstring: cl.docstring}] AS matched_classes,
-                  [fn IN funcs | fn.name] AS all_functions,
-                  [cl IN classes | cl.name] AS all_classes
-                LIMIT $limit
-                """,
-                term=query,
-                limit=limit,
-                codebase_name=codebase_name,
-            )
-        finally:
-            neo4j.close()
-            
-        if not results:
-            return f"No results found for '{query}' in codebase '{codebase_name}' (or Neo4j graph not populated — run: poetry run python scripts/build_index.py --codebase-path /path/to/{codebase_name} --index-name {codebase_name} --use-neo4j)."
-        
-        lines = [f"Found {len(results)} file(s) matching '{query}':"]
-        for r in results:
-            lines.append(f"\n  File: {r['file']}")
-            if r["matched_functions"]:
-                lines.append("    Matching functions:")
-                for fn in r["matched_functions"]:
-                    sig = fn.get("signature") or fn["name"]
-                    lines.append(f"      - {sig}")
-                    doc = fn.get("docstring")
-                    if doc:
-                        lines.append(f"        {doc}")
-            if r["matched_classes"]:
-                lines.append("    Matching classes:")
-                for cl in r["matched_classes"]:
-                    lines.append(f"      - {cl['name']}")
-                    doc = cl.get("docstring")
-                    if doc:
-                        lines.append(f"        {doc}")
-            lines.append(f"    All functions: {', '.join(r['all_functions']) or '(none)'}")
-            lines.append(f"    All classes:   {', '.join(r['all_classes']) or '(none)'}")
-        return "\n".join(lines)
+    Environment:
+        WAVERIDER_SEARCH_BACKEND: 'postgres' (default) or 'neo4j'
+        WAVERIDER_FALLBACK_ENABLED: 'true' (default) or 'false'
+    """
+    config = get_config()
+    
+    try:
+        if config.is_postgres():
+            return _search_codebase_postgres(query, codebase_name, limit, config)
+        else:  # neo4j
+            return _search_codebase_neo4j(query, codebase_name, limit, config)
     except Exception as e:
-        return f"Neo4j search unavailable: {e}. The knowledge graph may not be populated. Run: poetry run python scripts/build_index.py --codebase-path /path/to/codebase --index-name codebase_name --use-neo4j"
+        return f"Search error: {e}"
+
+
+def _search_codebase_postgres(query: str, codebase_name: str, limit: int, config) -> str:
+    """Search using Postgres backend."""
+    from waverider.database import DatabaseManager
+
+    db = DatabaseManager()
+    
+    # Get codebase metadata from Postgres
+    codebase_meta = db.get_codebase(codebase_name)
+    if not codebase_meta:
+        db.close()
+        return (
+            f"Codebase '{codebase_name}' not found in Postgres index. "
+            "Run: poetry run python scripts/build_index.py "
+            f"--codebase-path /path/to/{codebase_name} --index-name {codebase_name}"
+        )
+    
+    # Try Postgres-backed symbol search (prioritizes file/function/class name matches)
+    results = db.search_symbols_by_name(query=query, codebase_id=codebase_meta["id"], limit=limit)
+    db.close()
+    
+    # If Postgres search succeeds, format and return
+    if results:
+        lines = [f"Found {len(results)} symbol(s) for '{query}' in {codebase_name}:"]
+        for r in results:
+            match_type = r.get("match_type", "?")
+            lines.append(
+                f"\n  [{match_type.upper()}] {r['file_path']} ({r['snippet_type']}: {r['name']})"
+            )
+            lines.append(f"      Lines {r['start_line']}–{r['end_line']}")
+            snippet_preview = r["content"][:150].replace("\n", "\n      ")
+            if len(r["content"]) > 150:
+                snippet_preview += "..."
+            lines.append(f"      {snippet_preview}")
+        return "\n".join(lines)
+    
+    # Fallback to Neo4j if enabled
+    if config.fallback_enabled:
+        return _search_codebase_neo4j(query, codebase_name, limit, config)
+    
+    return f"No results found for '{query}' in {codebase_name} (Postgres backend, fallback disabled)."
+
+
+def _search_codebase_neo4j(query: str, codebase_name: str, limit: int, config) -> str:
+    """Search using Neo4j backend."""
+    from waverider.neo4j_graph import Neo4jGraphManager
+
+    neo4j = Neo4jGraphManager()
+    
+    try:
+        results = neo4j.query(
+            """
+            MATCH (cb:Codebase {name: $codebase_name})-[:CONTAINS_FILE]->(f:CodeFile)
+            WITH f
+            OPTIONAL MATCH (f)-[:CONTAINS_FUNCTION]->(fn:Function)
+            WITH f, collect(DISTINCT fn) AS funcs
+            OPTIONAL MATCH (f)-[:CONTAINS_CLASS]->(cl:Class)
+            WITH f, funcs, collect(DISTINCT cl) AS classes
+            WHERE toLower(f.path) CONTAINS toLower($term)
+               OR any(fn IN funcs WHERE toLower(fn.name) CONTAINS toLower($term))
+               OR any(cl IN classes WHERE toLower(cl.name) CONTAINS toLower($term))
+            RETURN
+              f.path AS file,
+              [fn IN funcs WHERE toLower(fn.name) CONTAINS toLower($term) | {name: fn.name, signature: fn.signature, docstring: fn.docstring}] AS matched_functions,
+              [cl IN classes WHERE toLower(cl.name) CONTAINS toLower($term) | {name: cl.name, docstring: cl.docstring}] AS matched_classes,
+              [fn IN funcs | fn.name] AS all_functions,
+              [cl IN classes | cl.name] AS all_classes
+            LIMIT $limit
+            """,
+            term=query,
+            limit=limit,
+            codebase_name=codebase_name,
+        )
+    finally:
+        neo4j.close()
+        
+    if not results:
+        backend_label = "Neo4j" if config.is_neo4j() else "Neo4j (fallback)"
+        return f"No results found for '{query}' in codebase '{codebase_name}' ({backend_label})."
+    
+    lines = [f"Found {len(results)} file(s) matching '{query}' (Neo4j):"]
+    for r in results:
+        lines.append(f"\n  File: {r['file']}")
+        if r["matched_functions"]:
+            lines.append("    Matching functions:")
+            for fn in r["matched_functions"]:
+                sig = fn.get("signature") or fn["name"]
+                lines.append(f"      - {sig}")
+                doc = fn.get("docstring")
+                if doc:
+                    lines.append(f"        {doc}")
+        if r["matched_classes"]:
+            lines.append("    Matching classes:")
+            for cl in r["matched_classes"]:
+                lines.append(f"      - {cl['name']}")
+                doc = cl.get("docstring")
+                if doc:
+                    lines.append(f"        {doc}")
+        lines.append(f"    All functions: {', '.join(r['all_functions']) or '(none)'}")
+        lines.append(f"    All classes:   {', '.join(r['all_classes']) or '(none)'}")
+    return "\n".join(lines)
 
 
 @mcp.tool()
 def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) -> str:
     """Semantically retrieve the most relevant code snippets for a natural-language query.
 
-    Uses vector embeddings to find snippets by meaning, not just keyword matching.
+    Uses hybrid search (vector embeddings + keyword/BM25 matching) with Reciprocal Rank Fusion.
+    This preserves lexical search quality while adding semantic understanding.
+
     Requires the codebase to be indexed with `scripts/build_index.py`.
 
     Args:
         query: Natural-language description of what you're looking for
         codebase_name: Name of the indexed codebase (default: waverider)
         limit: Number of snippets to return (default: 5)
+
+    Environment:
+        WAVERIDER_SEARCH_BACKEND: 'postgres' (default) or 'neo4j' (Neo4j does not support semantic search)
+        WAVERIDER_SEARCH_HYBRID: 'true' (default) or 'false' (disables keyword fusion)
     """
+    config = get_config()
+    
+    if config.is_neo4j():
+        return (
+            "Semantic search (retrieve_code) requires Postgres backend with pgvector. "
+            "Set WAVERIDER_SEARCH_BACKEND=postgres or use search_codebase for Neo4j-only mode."
+        )
+    
     try:
         import httpx
         from waverider.database import DatabaseManager
@@ -116,6 +191,7 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
         # Get codebase and check that it has been indexed.
         codebase = db.get_codebase(codebase_name)
         if not codebase:
+            db.close()
             return (
                 f"Codebase '{codebase_name}' not found. "
                 "Run: poetry run python scripts/build_index.py "
@@ -125,6 +201,7 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
         codebase_id = codebase["id"]
         stats = db.get_statistics(codebase_id)
         if stats.get("total_snippets", 0) == 0:
+            db.close()
             return (
                 f"Codebase '{codebase_name}' has not been indexed yet. "
                 "Run: poetry run python scripts/build_index.py "
@@ -144,6 +221,7 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
             resp.raise_for_status()
             query_vec = resp.json()["embedding"]
         except Exception as emb_err:
+            db.close()
             return (
                 f"Could not generate query embedding (is Ollama running?): {emb_err}\n"
                 "Start Ollama with: ollama serve"
@@ -152,6 +230,9 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
         # Hybrid search: Try coco_snippets first (Phase 2), fall back to old schema (Phase 1.1).
         use_coco = db.coco_table_exists() and stats.get("coco_row_count", 0) > 0
         
+        vector_results: list = []
+        keyword_results: list = []
+        
         if use_coco:
             # Phase 2: CocoIndex schema
             vector_results = db.search_coco_embeddings(
@@ -159,11 +240,13 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
                 codebase_name=codebase_name,
                 limit=limit * 2,
             )
-            keyword_results = db.search_coco_bm25(
-                query=query,
-                codebase_name=codebase_name,
-                limit=limit * 2,
-            )
+            # Use keyword search only if hybrid search is enabled
+            if config.hybrid_search:
+                keyword_results = db.search_coco_bm25(
+                    query=query,
+                    codebase_name=codebase_name,
+                    limit=limit * 2,
+                )
         else:
             # Phase 1.1: Old schema (code_snippets + embeddings)
             vector_results = db.search_embeddings(
@@ -171,18 +254,24 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
                 codebase_id=codebase_id,
                 limit=limit * 2,
             )
-            keyword_results = db.search_bm25(
-                query=query,
-                codebase_id=codebase_id,
-                limit=limit * 2,
-            )
+            # Use keyword search only if hybrid search is enabled
+            if config.hybrid_search:
+                keyword_results = db.search_bm25(
+                    query=query,
+                    codebase_id=codebase_id,
+                    limit=limit * 2,
+                )
 
-        fused = rrf_fuse(
-            {"vector": vector_results, "keyword": keyword_results},
-            id_key="id",
-            limit=limit,
-        )
-        results = fused if fused else vector_results[:limit]
+        # Fuse results if both vector and keyword results exist
+        if config.hybrid_search and keyword_results:
+            fused = rrf_fuse(
+                {"vector": vector_results, "keyword": keyword_results},
+                id_key="id",
+                limit=limit,
+            )
+            results = fused if fused else vector_results[:limit]
+        else:
+            results = vector_results[:limit]
 
         db.close()
 
@@ -215,6 +304,31 @@ def neo4j_status() -> str:
         return f"Neo4j connected. Total nodes in graph: {count}"
     except Exception as e:
         return f"Neo4j unavailable: {e}"
+
+
+@mcp.tool()
+def get_config() -> str:
+    """Return the current Waverider search configuration.
+    
+    Returns information about:
+    - Active search backend (postgres or neo4j)
+    - Hybrid search mode (vector + keyword fusion)
+    - Fallback behavior
+    """
+    from waverider.config import get_config as get_waverider_config
+    
+    config = get_waverider_config()
+    return (
+        f"Waverider Configuration:\n"
+        f"  Backend: {config.backend.value}\n"
+        f"  Hybrid Search: {'enabled (vector + keyword)' if config.hybrid_search else 'disabled (vector only)'}\n"
+        f"  Fallback Enabled: {config.fallback_enabled}\n"
+        f"\n"
+        f"Environment Variables:\n"
+        f"  WAVERIDER_SEARCH_BACKEND={os.getenv('WAVERIDER_SEARCH_BACKEND', 'not set (default: postgres)')}\n"
+        f"  WAVERIDER_SEARCH_HYBRID={os.getenv('WAVERIDER_SEARCH_HYBRID', 'not set (default: true)')}\n"
+        f"  WAVERIDER_FALLBACK_ENABLED={os.getenv('WAVERIDER_FALLBACK_ENABLED', 'not set (default: true)')}"
+    )
 
 
 if __name__ == "__main__":
