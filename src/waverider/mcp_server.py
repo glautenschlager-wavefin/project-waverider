@@ -200,7 +200,7 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
         
         codebase_id = codebase["id"]
         stats = db.get_statistics(codebase_id)
-        if stats.get("total_snippets", 0) == 0:
+        if stats.get("coco_row_count", 0) == 0:
             db.close()
             return (
                 f"Codebase '{codebase_name}' has not been indexed yet. "
@@ -227,40 +227,21 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
                 "Start Ollama with: ollama serve"
             )
 
-        # Hybrid search: Try coco_snippets first (Phase 2), fall back to old schema (Phase 1.1).
-        use_coco = db.coco_table_exists() and stats.get("coco_row_count", 0) > 0
-        
+        # Hybrid search on coco_snippets (CocoIndex schema).
         vector_results: list = []
         keyword_results: list = []
-        
-        if use_coco:
-            # Phase 2: CocoIndex schema
-            vector_results = db.search_coco_embeddings(
-                query_embedding=query_vec,
+
+        vector_results = db.search_coco_embeddings(
+            query_embedding=query_vec,
+            codebase_name=codebase_name,
+            limit=limit * 2,
+        )
+        if config.hybrid_search:
+            keyword_results = db.search_coco_bm25(
+                query=query,
                 codebase_name=codebase_name,
                 limit=limit * 2,
             )
-            # Use keyword search only if hybrid search is enabled
-            if config.hybrid_search:
-                keyword_results = db.search_coco_bm25(
-                    query=query,
-                    codebase_name=codebase_name,
-                    limit=limit * 2,
-                )
-        else:
-            # Phase 1.1: Old schema (code_snippets + embeddings)
-            vector_results = db.search_embeddings(
-                query_embedding=query_vec,
-                codebase_id=codebase_id,
-                limit=limit * 2,
-            )
-            # Use keyword search only if hybrid search is enabled
-            if config.hybrid_search:
-                keyword_results = db.search_bm25(
-                    query=query,
-                    codebase_id=codebase_id,
-                    limit=limit * 2,
-                )
 
         # Fuse results if both vector and keyword results exist
         if config.hybrid_search and keyword_results:

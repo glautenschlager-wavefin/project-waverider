@@ -77,7 +77,7 @@ Important: "The file is already open" is not sufficient justification to skip Wa
 - Embeddings are generated using **Ollama** (local, offline model: nomic-embed-text)
 - Snippets are extracted via **tree-sitter** (multi-language) or **Python AST** fallback
 - Class snippets include declaration + docstring + method signature list (methods indexed separately)
-- BM25 keyword search uses **SQLite FTS5** with code-aware tokenization (snake_case, camelCase, dot.path splitting)
+- BM25 keyword search uses **ParadeDB pg_bm25** with code-aware tokenization (snake_case, camelCase, dot.path splitting)
 - Results are fused with **Reciprocal Rank Fusion** (k=60)
 
 ---
@@ -99,11 +99,11 @@ The `alpha` parameter controls BM25 vs vector weighting in RRF:
 - Restart VS Code window to reload MCP servers
 
 **Search returning no results?**
-- For keyword search (BM25), ensure the FTS5 index is populated: run `python scripts/backfill_fts.py`
+- For keyword search (BM25), ensure ParadeDB is running and indexed: `docker compose up -d && make index`
 - For semantic search, check that the codebase has been indexed (run `make index`)
 - Verify codebase_name is exactly "waverider"
 
 **Getting stale results?**
-- Rebuild index with `make index` after code changes
-- Run `python scripts/backfill_fts.py` to update FTS5 index for existing codebases
+- Re-run `make index-repo REPO=<name>` to update the index (CocoIndex handles incremental updates)
+- Rebuild all indices with `make index` after major code changes
 - Neo4j graph enrichment is best-effort -- search works without it

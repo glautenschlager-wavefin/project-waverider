@@ -7,7 +7,8 @@ This guide covers setup and development environment configuration for the Waveri
 ### Prerequisites
 - Python 3.14+
 - Poetry (install via `pip install poetry`)
-- Optional: Docker (for Neo4j)
+- Docker & Docker Compose (required for ParadeDB + Neo4j)
+- Ollama (local embedding generation — install via `brew install ollama` on macOS)
 
 ### Initial Setup
 
@@ -24,13 +25,19 @@ poetry env use python3.14
 # Install dependencies
 poetry install
 
-# Activate the virtual environment
-poetry shell
+# Start infrastructure (ParadeDB + Neo4j)
+docker compose up -d
+
+# Pull the embedding model
+ollama pull nomic-embed-text
+
+# Index the waverider codebase itself
+make index
 ```
 
 Alternatively, use `poetry run` to run commands without activating the shell:
 ```bash
-poetry run python scripts/setup_sqlite.py
+poetry run python -m waverider.mcp_server
 ```
 
 If Poetry already created an environment with an older Python version, recreate it:
@@ -57,91 +64,78 @@ pre-commit run --all-files
 
 Now your code will be automatically formatted and checked on each commit!
 
-## SQLite Configuration
+## Database Configuration (ParadeDB)
 
-### Setting Up SQLite
+Waverider uses **ParadeDB** — a Postgres distribution bundled with pgvector (vector similarity) and pg_bm25 (full-text search). All data lives in a single Postgres cluster.
 
-SQLite is a lightweight, file-based database that requires no server setup.
-
-```bash
-# SQLite is built into Python, but you may want to install the sqlite3 CLI
-# macOS (Homebrew)
-brew install sqlite
-
-# Ubuntu/Linux
-sudo apt-get install sqlite3
-```
-
-### Database Structure
-
-Create the main database file:
+### Starting the Database
 
 ```bash
-python scripts/setup_sqlite.py
+# Start all services (ParadeDB, Neo4j, MCP server)
+docker compose up -d
+
+# Verify ParadeDB is healthy
+docker compose exec paradedb pg_isready -U waverider -d waverider
 ```
 
-This script will:
-1. Create `data/waverider.db` (SQLite database file)
-2. Initialize core tables:
-   - `codebase_metadata` - Tracks codebase information
-   - `source_files` - File metadata and checksums
-   - `code_snippets` - Extracted code segments
-   - `embeddings` - Vector embeddings and metadata
-   - `indices` - Index build history and status
+### Database Schema
 
-### SQLite Usage Example
+CocoIndex manages the schema automatically on first index run. The primary table is:
+
+- **`coco_snippets`** — Code snippets with embeddings, BM25 index, and metadata
+
+### Connecting to the Database
+
+```bash
+# Open a psql shell
+make db-shell
+
+# Check table sizes and row counts
+make db-status
+```
+
+### Programmatic Access
 
 ```python
-import sqlite3
+from waverider.database import DatabaseManager
 
-conn = sqlite3.connect('data/waverider.db')
-cursor = conn.cursor()
+db = DatabaseManager()
+stats = db.get_statistics()
+print(f"CocoIndex rows: {stats['coco_row_count']}")
 
-# Query example
-cursor.execute('SELECT * FROM codebase_metadata')
-results = cursor.fetchall()
-conn.close()
+# Search via embeddings
+results = db.search_coco_embeddings(query_vector, limit=10)
+
+# Search via BM25 keywords
+results = db.search_coco_bm25("DatabaseManager", limit=10)
 ```
 
 ### Database Backup
 
 ```bash
-# Backup the SQLite database
-cp data/waverider.db data/waverider.db.backup
+# Dump the entire database
+docker compose exec paradedb pg_dump -U waverider waverider > backup.sql
 
-# In Python
-python scripts/backup_sqlite.py
+# Restore from backup
+cat backup.sql | docker compose exec -T paradedb psql -U waverider -d waverider
 ```
 
 ## Neo4j Configuration
 
-Neo4j is not embedded like SQLite. If you want graph features, you need a running Neo4j server process, either as a local service or a Docker container.
+Neo4j provides optional knowledge-graph features (call graphs, dependency analysis). It runs as a service alongside ParadeDB in Docker Compose.
 
-### Option 1: Docker Setup (Recommended)
+### Docker Setup (default)
 
-Neo4j requires a running server instance. Using Docker is the simplest approach:
+Neo4j starts automatically with `docker compose up -d`. Default credentials:
+- **Bolt**: `bolt://localhost:7687`
+- **Browser**: `http://localhost:7474`
+- **User/Password**: `neo4j` / `changeme` (override with `NEO4J_PASSWORD` env var)
 
-```bash
-# Pull the Neo4j docker image
-docker pull neo4j:latest
+### Option 2: Local Installation (alternative)
 
-# Run Neo4j in Docker
-docker run \
-  --name waverider-neo4j \
-  -p 7474:7474 \
-  -p 7687:7687 \
-  -e NEO4J_AUTH=neo4j/your_password_here \
-  -v neo4j_data:/data \
-  neo4j:latest
-```
-
-### Option 2: Local Installation
+For local development without Docker, you can install Neo4j directly:
 
 **macOS (Homebrew):**
-```bash
-brew install neo4j
-brew services start neo4j
-```
 
 Service management on macOS:
 
@@ -208,39 +202,33 @@ Access Neo4j Browser at: `http://localhost:7474/browser/`
 
 ### Building Vector Indices
 
-Waverider can build vector indices over source code using embeddings:
+Waverider uses **CocoIndex** for incremental indexing. CocoIndex tracks file changes and only re-indexes what changed.
 
 ```bash
-# Full index build (SQLite + Neo4j)
-python scripts/build_index.py \
-  --codebase-path /path/to/codebase \
-  --index-name my_codebase \
-  --use-sqlite \
-  --use-neo4j
+# Index the waverider codebase itself (runs in Docker)
+make index
 
-# SQLite only
-python scripts/build_index.py \
-  --codebase-path /path/to/codebase \
-  --index-name my_codebase \
-  --use-sqlite
+# Index a Wave service repo
+make index-repo REPO=accounting
 
-# Neo4j only
+# Index all configured Wave repos
+make index-all
+```
+
+### Running the indexer directly
+
+```bash
 python scripts/build_index.py \
   --codebase-path /path/to/codebase \
   --index-name my_codebase \
-  --use-neo4j
+  --description "My project's source code"
 ```
 
 ### Script Options
 
 - `--codebase-path`: Path to the source code directory
 - `--index-name`: Unique identifier for this index
-- `--use-sqlite`: Build SQLite-backed indices
-- `--use-neo4j`: Build Neo4j knowledge graph
-- `--model`: Embedding model (default: "text-embedding-3-small")
-- `--exclude-patterns`: Patterns to exclude (e.g., ".git", "__pycache__")
-- `--chunk-size`: Code snippet chunk size (default: 1024)
-- `--batch-size`: Processing batch size (default: 10)
+- `--description`: Human-readable description of the codebase
 
 ### Checking Index Status
 
@@ -250,6 +238,9 @@ python scripts/list_indices.py
 
 # Get details about a specific index
 python scripts/index_stats.py --index-name my_codebase
+
+# Check database table sizes
+make db-status
 ```
 
 ## Project Structure
@@ -258,37 +249,39 @@ python scripts/index_stats.py --index-name my_codebase
 project waverider/
 ├── README.md                 # Project overview
 ├── SETUP.md                  # This file
-├── pyproject.toml           # Python project metadata
-├── requirements.txt         # Python dependencies
-├── .gitignore              # Git ignore rules
+├── AGENTS.md                 # Agent decision tree & MCP tool docs
+├── docker-compose.yml        # ParadeDB + Neo4j + Waverider services
+├── Makefile                  # Convenience commands
+├── pyproject.toml            # Python project metadata
+├── requirements.txt          # Python dependencies
 │
 ├── src/
 │   └── waverider/
 │       ├── __init__.py
-│       ├── mcp_server.py   # MCP server implementation
-│       ├── database.py     # Database utilities
-│       ├── embeddings.py   # Embedding generation
-│       ├── indexer.py      # Index building logic
-│       └── neo4j_graph.py  # Neo4j integration
+│       ├── mcp_server.py     # MCP server (search + explore_graph)
+│       ├── database.py       # ParadeDB/Postgres queries
+│       ├── embeddings.py     # Embedding generation (Ollama)
+│       ├── fusion.py         # Reciprocal Rank Fusion
+│       ├── indexer.py        # Code extraction (tree-sitter)
+│       ├── neo4j_graph.py    # Neo4j knowledge graph
+│       └── treesitter_parser.py  # Multi-language AST parsing
 │
 ├── scripts/
-│   ├── build_index.py      # Main index builder
-│   ├── setup_sqlite.py     # SQLite initialization
-│   ├── setup_neo4j.py      # Neo4j schema setup
-│   ├── list_indices.py     # List built indices
-│   ├── index_stats.py      # Index statistics
-│   └── test_neo4j_connection.py
+│   ├── build_index.py        # Main indexing script (CocoIndex)
+│   ├── setup_neo4j.py        # Neo4j schema setup
+│   ├── validate_corpus.py    # Post-index validation
+│   ├── load_test.py          # Search performance benchmarks
+│   ├── list_indices.py       # List built indices
+│   ├── index_stats.py        # Index statistics
+│   └── index_wave_repos.sh   # Batch-index Wave repos
 │
-├── data/
-│   └── waverider.db        # SQLite database (generated)
-│
-├── indices/                 # Index data (generated)
+├── indices/                  # Index metadata (generated)
 │
 └── tests/
     ├── __init__.py
     ├── test_database.py
-    ├── test_indexer.py
-    └── test_mcp_server.py
+    ├── test_fusion.py
+    └── test_indexer.py
 ```
 
 ## Environment Variables
@@ -296,17 +289,23 @@ project waverider/
 Create a `.env` file in the project root:
 
 ```
-# OpenAI API
-OPENAI_API_KEY=your_key_here
+# Database (ParadeDB)
+DATABASE_URL=postgresql://waverider:changeme@localhost:5432/waverider
+COCOINDEX_DB_URL=postgresql://waverider:changeme@localhost:5432/waverider
+POSTGRES_PASSWORD=changeme
 
-# Neo4j Connection
+# Ollama (embedding generation)
+OLLAMA_URL=http://localhost:11434
+OLLAMA_HOST=http://host.docker.internal:11434   # Used by Docker containers
+OLLAMA_MODEL=nomic-embed-text
+
+# Neo4j (optional knowledge graph)
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=your_password
+NEO4J_PASSWORD=changeme
 
-# Waverider Config
-WAVERIDER_DATA_DIR=./data
-WAVERIDER_INDICES_DIR=./indices
+# Waverider
+WAVERIDER_SEARCH_BACKEND=postgres   # or "neo4j"
 LOG_LEVEL=INFO
 ```
 
@@ -442,11 +441,16 @@ docker run --rm curlimages/curl:8.7.1 curl -s http://host.docker.internal:11434/
   On native Linux Docker, add a host mapping such as
   `extra_hosts: ["host.docker.internal:host-gateway"]` if resolution fails.
 
-### SQLite Issues
+### ParadeDB Issues
 
-**"database is locked"**
-- Close other connections to the database
-- Use `sqlite3` with `timeout` parameter
+**"Connection refused" on port 5432**
+- Verify ParadeDB is running: `docker compose ps`
+- Check logs: `docker compose logs paradedb`
+- Ensure port 5432 is not used by another Postgres instance
+
+**"relation coco_snippets does not exist"**
+- Run `make index` to trigger CocoIndex schema creation
+- Verify connection: `make db-shell` then `\dt`
 
 ### Neo4j Issues
 
@@ -460,16 +464,15 @@ docker run --rm curlimages/curl:8.7.1 curl -s http://host.docker.internal:11434/
 
 ### Embeddings Issues
 
-**"OpenAI API rate limited"**
-- Implement request throttling
-- Use smaller batch sizes
-- Cache embeddings in SQLite
+**"Ollama model not found"**
+- Pull the model: `ollama pull nomic-embed-text`
+- Verify: `ollama list`
 
 ## Next Steps
 
-1. Create your first index over a test codebase
-2. Query the SQLite database for code snippets
-3. Explore the Neo4j knowledge graph
-4. Build the MCP server interface
+1. Start infrastructure: `docker compose up -d`
+2. Index a codebase: `make index` or `make index-repo REPO=<name>`
+3. Explore the Neo4j knowledge graph at `http://localhost:7474`
+4. Open the workspace in VS Code — MCP tools are available in Copilot Chat
 
-See the main [README.md](README.md) for architecture details.
+See the main [README.md](README.md) for architecture details and [AGENTS.md](AGENTS.md) for agent integration.

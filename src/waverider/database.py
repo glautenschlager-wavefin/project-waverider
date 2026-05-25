@@ -479,10 +479,25 @@ class DatabaseManager:
                 """,
                 (codebase_id,),
             ).fetchone()["c"]
+
+            # CocoIndex table row count
+            coco_row_count = 0
+            if self.coco_table_exists():
+                codebase = conn.execute(
+                    "SELECT name FROM codebase_metadata WHERE id = %s",
+                    (codebase_id,),
+                ).fetchone()
+                if codebase:
+                    coco_row_count = conn.execute(
+                        "SELECT COUNT(*) AS c FROM coco_snippets WHERE codebase_name = %s",
+                        (codebase["name"],),
+                    ).fetchone()["c"]
+
         return {
             "total_files": total_files,
             "total_snippets": total_snippets,
             "total_embeddings": total_embeddings,
+            "coco_row_count": coco_row_count,
         }
 
     def close(self) -> None:

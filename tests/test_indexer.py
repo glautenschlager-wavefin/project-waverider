@@ -4,17 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from waverider.database import DatabaseManager
-from waverider.embeddings import MockEmbeddings
 from waverider.indexer import CodebaseIndexer
 
 
 def test_extract_python_snippets_class_is_compact() -> None:
     """Class snippets should include declaration/docstring and method signatures but not full method bodies."""
-    indexer = CodebaseIndexer(
-        db_manager=DatabaseManager(db_path=":memory:"),
-        embedding_provider=MockEmbeddings(dimension=8),
-    )
+    indexer = CodebaseIndexer.__new__(CodebaseIndexer)
 
     content = '''
 class Example:

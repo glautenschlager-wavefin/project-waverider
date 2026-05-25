@@ -5,34 +5,27 @@ An **MCP (Model Context Protocol) server** for building vector indices and knowl
 ## Features
 
 - **Vector Indexing**: Extract code snippets (functions, classes, imports, module constants) and generate embeddings using Ollama (local)
-- **SQLite Storage**: Lightweight, file-based database for storing code metadata and embeddings
+- **ParadeDB/pgvector**: Postgres-based hybrid search with BM25 full-text (pg_bm25) and vector similarity (pgvector)
 - **Neo4j Knowledge Graph**: Optional knowledge graph to model code structure, relationships, and dependencies
 - **MCP Server Interface**: Expose indices through the Model Context Protocol for seamless AI integration
 - **Multi-language Support**: Handles Python, JavaScript, TypeScript, Java, Go, Rust, and more
-- **Dependency Analysis**: Understand function calls, imports, and circular dependencies
+- **Incremental Indexing**: CocoIndex tracks file changes and only re-indexes what changed
 
 ## Quick Start
 
-1. **Setup the environment**:
+1. **Start infrastructure**:
    ```bash
-   pip install poetry
-   poetry env use python3.14
-   poetry install
-   poetry shell
+   docker compose up -d
    ```
 
-2. **Initialize SQLite**:
+2. **Pull the embedding model** (if not already available):
    ```bash
-   python scripts/setup_sqlite.py
+   ollama pull nomic-embed-text
    ```
 
 3. **Build an index**:
    ```bash
-   # Using Ollama embeddings (default — requires local Ollama with nomic-embed-text)
-   python scripts/build_index.py --codebase-path /path/to/code --index-name my-project
-
-   # Or using mock embeddings for testing
-   python scripts/build_index.py --codebase-path /path/to/code --index-name my-project --embedding-provider mock
+   make index
    ```
 
 ## Architecture
@@ -51,15 +44,14 @@ An **MCP (Model Context Protocol) server** for building vector indices and knowl
 │  search(query, alpha)        explore_graph(entity)  │
 │        │                            │               │
 │        ├──── BM25 branch ───┐       │  Cypher query │
-│        │  FTS5 keyword      │       │  (callers,    │
+│        │  pg_bm25 keyword   │       │  (callers,    │
 │        │  search w/ code-   │       │   callees,    │
 │        │  aware tokenizer   │       │   methods,    │
 │        │                    │       │   imports)    │
 │        ├──── Vector branch ─┤       │               │
 │        │  Embed query via   │       │               │
-│        │  Ollama, cosine    │       │               │
-│        │  sim on precomp.   │       │               │
-│        │  numpy index       │       │               │
+│        │  Ollama, pgvector  │       │               │
+│        │  cosine similarity │       │               │
 │        │                    │       │               │
 │        ▼                    │       │               │
 │  ┌────────────────────┐     │       │               │
@@ -71,14 +63,14 @@ An **MCP (Model Context Protocol) server** for building vector indices and knowl
 │           ▼                         ▼               │
 │    fused ranked results    graph relationships      │
 └───────┬──────────────────────────┬──────────────────┘
-        │ read/write               │ graph queries
+        │ SQL queries              │ graph queries
         ▼                          ▼
 ┌──────────────────────────┐  ┌─────────────────────────┐
-│ SQLite (embedded)        │  │ Neo4j (service)         │
-│ - code_snippets          │  │ - Codebase/File/Func/   │
-│ - embeddings             │  │   Class nodes           │
-│ - FTS5 full-text index   │  │ - CALLS, IMPORTS,       │
-│ - precomputed numpy vecs │  │   CONTAINS_* edges      │
+│ ParadeDB (Postgres 17)   │  │ Neo4j (service)         │
+│ - coco_snippets table    │  │ - Codebase/File/Func/   │
+│ - pgvector embeddings    │  │   Class nodes           │
+│ - pg_bm25 full-text      │  │ - CALLS, IMPORTS,       │
+│ - CocoIndex incremental  │  │   CONTAINS_* edges      │
 └──────────┬───────────────┘  └─────────────────────────┘
            │
            │ embedding requests (index-time)
@@ -98,7 +90,8 @@ source code
      │
      ▼
 ┌──────────────────────────┐
-│ Tree-sitter / AST parser │  extract functions, classes, imports, constants
+│ CocoIndex pipeline       │  incremental — only re-indexes changed files
+│ (Tree-sitter parsing)    │  extract functions, classes, imports, constants
 └────────────┬─────────────┘
              │ snippets
              ├────────────────────────────────┐
@@ -106,12 +99,12 @@ source code
   ┌─────────────────────┐        ┌─────────────────────────┐
   │ Ollama embeddings   │        │ Code-aware tokenizer    │
   │ (nomic-embed-text)  │        │ (camelCase/snake_case   │
-  └──────────┬──────────┘        │  splitting for FTS5)    │
+  └──────────┬──────────┘        │  splitting for pg_bm25) │
              │                   └────────────┬────────────┘
              ▼                                ▼
   ┌─────────────────────┐        ┌─────────────────────────┐
-  │ SQLite: embeddings  │        │ SQLite: FTS5 index      │
-  │ + numpy vec index   │        │ (BM25 keyword search)   │
+  │ ParadeDB: pgvector  │        │ ParadeDB: pg_bm25 index │
+  │ embeddings column   │        │ (BM25 keyword search)   │
   └─────────────────────┘        └─────────────────────────┘
              │
              ▼  (optional)
@@ -128,17 +121,18 @@ See [SETUP.md](SETUP.md) for complete setup and development guide.
 ```
 project waverider/
 ├── src/waverider/          # Main package
-│   ├── database.py         # SQLite management
-│   ├── indexer.py          # Code extraction & indexing
+│   ├── database.py         # Postgres/ParadeDB queries
+│   ├── indexer.py          # CocoIndex pipeline definition
 │   ├── embeddings.py       # Embedding generation
 │   ├── neo4j_graph.py      # Knowledge graph
 │   └── mcp_server.py       # MCP interface
 ├── scripts/                # Command-line tools
 │   ├── build_index.py      # Main indexing script
-│   ├── setup_sqlite.py     # Initialize SQLite
 │   ├── setup_neo4j.py      # Initialize Neo4j
 │   └── list_indices.py     # List built indices
-├── data/                   # Data directory (generated)
+├── docker-compose.yml      # ParadeDB + Neo4j + Waverider
+├── Dockerfile              # Waverider container image
+├── Makefile                # Convenience targets (index, index-repo, etc.)
 ├── indices/                # Index metadata (generated)
 └── tests/                  # Test suite
 ```
@@ -146,26 +140,29 @@ project waverider/
 ## Technologies
 
 - **Python 3.14+** - Core language
-- **SQLite** - File-based vector database
+- **ParadeDB/pgvector** - Postgres-based hybrid search (BM25 + vector similarity)
+- **CocoIndex** - Incremental indexing framework
 - **Neo4j** - Optional knowledge graph database
 - **Ollama** - Local embedding generation (nomic-embed-text)
-- **AST Parsing** - Code structure analysis
+- **Tree-sitter** - Multi-language code parsing
 
 ## Setup Guides
 
-- **SQLite Setup**: See [SETUP.md - SQLite Configuration](SETUP.md#sqlite-configuration)
+- **Quick Start**: See [SETUP.md - Quick Start](SETUP.md#quick-start-docker)
+- **Database Configuration**: See [SETUP.md - Database Configuration](SETUP.md#database-configuration)
 - **Neo4j Setup**: See [SETUP.md - Neo4j Configuration](SETUP.md#neo4j-configuration)
 - **Index Building**: See [SETUP.md - Index Building](SETUP.md#index-building)
-- **Development**: See [SETUP.md - Development](SETUP.md#development)
+- **Troubleshooting**: See [SETUP.md - Troubleshooting](SETUP.md#troubleshooting)
 
 ## Usage Examples
 
 ### Index a codebase
 ```bash
-python scripts/build_index.py \
-  --codebase-path /path/to/project \
-  --index-name backend \
-  --description "Backend API codebase"
+# Index the waverider project itself
+make index
+
+# Index an external repo
+make index-repo REPO=my-project REPO_PATH=/path/to/project
 ```
 
 ### List indices
@@ -178,77 +175,38 @@ python scripts/list_indices.py
 python scripts/index_stats.py --index-name backend
 ```
 
-### Query an index (programmatic)
-```python
-from waverider.database import DatabaseManager
-
-db = DatabaseManager()
-codebase = db.get_codebase("backend")
-stats = db.get_statistics(codebase["id"])
-print(f"Total snippets: {stats['total_snippets']}")
+### Check database status
+```bash
+make db-status
 ```
 
 ## Configuration
 
-Create a `.env` file in the project root:
+All configuration is via environment variables (see `docker-compose.yml` for defaults):
 
 ```
-# Neo4j (if using)
+# Database (ParadeDB)
+DATABASE_URL=postgresql://waverider:changeme@localhost:5432/waverider
+
+# Ollama
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=nomic-embed-text
+
+# Neo4j (optional)
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=your-password
-
-# Waverider in Docker should call host Ollama via host.docker.internal
-# Docker Desktop on macOS/Windows resolves this automatically.
-OLLAMA_HOST=http://host.docker.internal:11434
+NEO4J_PASSWORD=changeme
 ```
 
-On native Linux Docker, `host.docker.internal` may require an explicit mapping such as
-`extra_hosts: ["host.docker.internal:host-gateway"]` in your Compose service.
-
-If you run Ollama via Homebrew on macOS and call it from Docker containers, ensure
-Ollama listens on all interfaces instead of loopback-only:
-
-```bash
-launchctl setenv OLLAMA_HOST "0.0.0.0:11434"
-brew services restart ollama
-```
+> **Tip:** On macOS, Ollama runs natively for Metal GPU acceleration. Docker containers reach it via `host.docker.internal:11434` (configured automatically in `docker-compose.yml`).
 
 ## Neo4j Runtime
 
-SQLite is embedded and needs no separate process. Neo4j is different: it must be running as its own database service before Waverider can connect to it.
-
-For local macOS development, Homebrew is the simplest option:
+Both ParadeDB and Neo4j run as Docker Compose services — `docker compose up -d` starts everything:
 
 ```bash
-brew install neo4j
-brew services start neo4j
-```
-
-Useful management commands:
-
-```bash
-# Start Neo4j as a background service
-brew services start neo4j
-
-# Stop the service
-brew services stop neo4j
-
-# Restart after config changes
-brew services restart neo4j
-
-# Check service status
-brew services list | grep neo4j
-
-# Run in the foreground instead of as a service
-/opt/homebrew/opt/neo4j/bin/neo4j console
-```
-
-Once running, the local endpoints are typically:
-
-```text
-Browser: http://localhost:7474
-Bolt:    bolt://localhost:7687
+docker compose up -d   # starts paradedb + neo4j + waverider
+docker compose ps      # check service health
 ```
 
 Then initialize and verify Waverider's Neo4j integration:
@@ -258,19 +216,30 @@ poetry run python scripts/setup_neo4j.py
 poetry run python scripts/test_neo4j_connection.py
 ```
 
+<details>
+<summary>Advanced: native Neo4j (without Docker)</summary>
+
+```bash
+brew install neo4j
+brew services start neo4j
+# Browser: http://localhost:7474 | Bolt: bolt://localhost:7687
+```
+</details>
+
 ## Using Waverider with AI Agents
 
 When this project is opened in an AI-enabled code editor (like VS Code with GitHub Copilot), Waverider exposes two MCP tools for semantic code search:
 
 ### Available Tools
 
-1. **`search_codebase(query, codebase_name, limit)`** — Keyword-based search via Neo4j
-   - Best for: Finding code by explicit class/function names
+1. **`search_codebase(query, codebase_name, limit, alpha)`** — Hybrid search via ParadeDB (BM25 + pgvector)
+   - Best for: Finding code by name, keyword, concept, or behavior
+   - `alpha` controls BM25 vs vector weighting (0.0 = keyword only, 1.0 = semantic only)
    - Example: "Find DatabaseManager implementation"
 
-2. **`retrieve_code(query, codebase_name, limit)`** — Semantic search via embeddings
-   - Best for: Finding code by concept or behavior
-   - Example: "How is code indexed and stored?"
+2. **`explore_graph(entity_name, codebase_name, relationship)`** — Structural traversal via Neo4j
+   - Best for: Call graphs, method lists, import relationships
+   - Example: "What calls `search_embeddings`?"
 
 ### Configuration
 
@@ -280,11 +249,11 @@ The MCP server is defined in `.vscode/mcp.json` and launched automatically when 
 
 In a chat with the AI agent in this workspace:
 
-> "How do Waverider's SQLite and Neo4j layers work together to index code?"
+> "How do Waverider's ParadeDB and Neo4j layers work together to index code?"
 
 The agent will automatically use the MCP tools to:
 1. Search for database-related code (`search_codebase`)
-2. Retrieve implementation details about indexing (`retrieve_code`)
+2. Explore structural relationships (`explore_graph`)
 3. Summarize relationships and answer your question
 
 See [AGENTS.md](AGENTS.md) for a complete agent decision tree and troubleshooting guide.

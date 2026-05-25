@@ -19,22 +19,13 @@ def _parse_args():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Build vector indices over a codebase (CocoIndex incremental by default)"
+        description="Build vector indices over a codebase (CocoIndex incremental)"
     )
     parser.add_argument("--codebase-path", required=True, help="Path to the codebase to index")
     parser.add_argument("--index-name", required=True, help="Unique name for this index")
     parser.add_argument("--description", default="", help="Description of the codebase")
     parser.add_argument("--language", default="python", help="Primary language")
-    parser.add_argument(
-        "--legacy", action="store_true",
-        help="Use legacy manual indexer instead of CocoIndex",
-    )
-    parser.add_argument("--full", action="store_true", help="Force full reindex (legacy mode only)")
     parser.add_argument("--use-neo4j", action="store_true", help="Build Neo4j knowledge graph")
-    parser.add_argument(
-        "--embedding-provider", choices=["ollama", "mock"], default="ollama",
-        help="Embedding provider (legacy mode only)",
-    )
     parser.add_argument("--model", default="nomic-embed-text", help="Embedding model")
     parser.add_argument(
         "--exclude", nargs="*", default=[], help="Additional directory patterns to exclude",
@@ -98,83 +89,6 @@ def _run_cocoindex(args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Legacy manual indexer path (fallback)
-# ---------------------------------------------------------------------------
-
-
-def _run_legacy(args) -> int:
-    """Run indexing via the legacy manual indexer."""
-    from waverider.database import DatabaseManager
-    from waverider.embeddings import get_embedding_provider
-    from waverider.indexer import CodebaseIndexer
-
-    codebase_path = Path(args.codebase_path).resolve()
-
-    print("=" * 70)
-    print("Waverider Index Builder — Legacy Manual Indexer")
-    print("=" * 70)
-    print(f"  Codebase: {args.index_name}")
-    print(f"  Path:     {codebase_path}")
-    print(f"  Mode:     {'full rebuild' if args.full else 'incremental'}")
-    print()
-
-    # 1. Register codebase
-    print("1. Registering codebase in metadata...")
-    try:
-        db = DatabaseManager()
-        db.init_schema()
-        db.add_codebase(
-            name=args.index_name,
-            path=str(codebase_path),
-            description=args.description,
-            language=args.language,
-        )
-        print(f"   ✓ Registered '{args.index_name}'")
-    except Exception as e:
-        print(f"   ✗ Failed: {e}")
-        return 1
-
-    # 2. Index codebase
-    print("\n2. Indexing codebase...")
-    try:
-        embeddings = get_embedding_provider(provider=args.embedding_provider, model=args.model)
-        indexer = CodebaseIndexer(
-            db_manager=db, embedding_provider=embeddings, exclude_patterns=args.exclude,
-        )
-
-        stats = indexer.index_codebase(
-            codebase_name=args.index_name,
-            codebase_path=str(codebase_path),
-            description=args.description,
-            batch_size=10,
-            incremental=not args.full,
-        )
-
-        print(f"   ✓ Indexed {stats['total_files_indexed']} files")
-        print(f"   ✓ Created {stats['total_snippets']} snippets")
-        print(f"   ✓ Generated {stats['total_embeddings']} embeddings")
-    except Exception as e:
-        print(f"   ✗ Indexing failed: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return 1
-
-    # 3. Build Neo4j graph
-    if args.use_neo4j:
-        _build_neo4j(args)
-
-    # 4. Save metadata
-    _save_metadata(args, codebase_path, indexer="manual")
-
-    db.close()
-    print("\n" + "=" * 70)
-    print("✓ Legacy indexing complete")
-    print("=" * 70)
-    return 0
-
-
-# ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
@@ -208,7 +122,6 @@ def _save_metadata(args, codebase_path: Path, indexer: str) -> None:
         "codebase_path": str(codebase_path),
         "indexer": indexer,
         "embedding_model": args.model,
-        "full_reindex": args.full if hasattr(args, "full") else False,
         "neo4j": args.use_neo4j,
     }
     metadata_path = Path("indices") / f"{args.index_name}_metadata.json"
@@ -231,8 +144,6 @@ def main() -> int:
         print(f"✗ Codebase path does not exist: {codebase_path}")
         return 1
 
-    if args.legacy:
-        return _run_legacy(args)
     return _run_cocoindex(args)
 
 
