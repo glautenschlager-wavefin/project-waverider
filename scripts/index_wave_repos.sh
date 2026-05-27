@@ -1,5 +1,19 @@
 #!/usr/bin/env bash
-# Index multiple Wave codebases — Phase 4 (CocoIndex incremental by default)
+# DEPRECATED: This script is superseded by the DB-backed codebase registry.
+#
+# To manage codebases, use the MCP admin tools:
+#   register_codebase, list_codebases, set_codebase_enabled, deregister_codebase
+#
+# To seed the registry from this list (one-time migration):
+#   poetry run python scripts/seed_registry.py
+#
+# To trigger reindexing:
+#   poetry run python scripts/reindex_if_changed.py --once
+#
+# This file is kept for historical reference and manual emergency use only.
+# -------------------------------------------------------------------------
+#
+# (Original description: Index multiple Wave codebases — Phase 4, CocoIndex incremental by default)
 #
 # Usage:
 #   ./scripts/index_wave_repos.sh              # incremental (default)

@@ -152,6 +152,18 @@ ALTER TABLE code_snippets ADD COLUMN IF NOT EXISTS content_tsvector tsvector GEN
 CREATE INDEX IF NOT EXISTS idx_code_snippets_tsvector ON code_snippets USING GIN(content_tsvector);
 """
 
+# ---------------------------------------------------------------------------
+# Schema migration — add registry columns (idempotent via IF NOT EXISTS)
+# ---------------------------------------------------------------------------
+
+_MIGRATION_SQL = """
+ALTER TABLE codebase_metadata
+    ADD COLUMN IF NOT EXISTS enabled             BOOLEAN NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS github_repo         TEXT,
+    ADD COLUMN IF NOT EXISTS main_branch_name    TEXT    NOT NULL DEFAULT 'main',
+    ADD COLUMN IF NOT EXISTS last_indexed_commit TEXT
+"""
+
 
 class DatabaseManager:
     """Manages PostgreSQL database with pgvector and pg_bm25 (ParadeDB)."""
@@ -186,6 +198,10 @@ class DatabaseManager:
                 stmt = stmt.strip()
                 if stmt:
                     conn.execute(stmt)
+            conn.commit()
+
+            # Apply registry column migration (idempotent)
+            conn.execute(_MIGRATION_SQL)
             conn.commit()
             
             # Try pg_bm25 first (ParadeDB feature), fall back to tsvector
@@ -504,6 +520,88 @@ class DatabaseManager:
         if self._pool is not None:
             self._pool.close()
             self._pool = None
+
+    # ------------------------------------------------------------------
+    # Codebase registry — added for DB-backed registry feature
+    # ------------------------------------------------------------------
+
+    def upsert_codebase_registration(
+        self,
+        name: str,
+        path: str,
+        description: str = "",
+        language: str = "mixed",
+        github_repo: Optional[str] = None,
+        main_branch_name: str = "main",
+    ) -> int:
+        """Insert or update a codebase registry row.
+
+        Does NOT overwrite ``enabled`` or ``last_indexed_commit`` on conflict.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO codebase_metadata
+                    (name, path, description, language, github_repo, main_branch_name, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (name) DO UPDATE SET
+                    path             = EXCLUDED.path,
+                    description      = EXCLUDED.description,
+                    language         = EXCLUDED.language,
+                    github_repo      = EXCLUDED.github_repo,
+                    main_branch_name = EXCLUDED.main_branch_name,
+                    updated_at       = NOW()
+                RETURNING id
+                """,
+                (name, path, description, language, github_repo, main_branch_name),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError(f"upsert_codebase_registration failed for '{name}'")
+            return int(row["id"])
+
+    def get_enabled_codebases(self) -> List[Dict[str, Any]]:
+        """Return all codebases where ``enabled = true``, ordered by name."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM codebase_metadata WHERE enabled = true ORDER BY name"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_last_indexed_commit(self, name: str, sha: str) -> None:
+        """Record the commit SHA that was last successfully indexed."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE codebase_metadata
+                SET last_indexed_commit = %s, updated_at = NOW()
+                WHERE name = %s
+                """,
+                (sha, name),
+            )
+
+    def set_codebase_enabled(self, name: str, enabled: bool) -> bool:
+        """Flip the ``enabled`` flag for a codebase. Returns False if not found."""
+        with self._conn() as conn:
+            result = conn.execute(
+                """
+                UPDATE codebase_metadata
+                SET enabled = %s, updated_at = NOW()
+                WHERE name = %s
+                """,
+                (enabled, name),
+            )
+        return result.rowcount == 1
+
+    def delete_codebase(self, name: str) -> bool:
+        """Delete a codebase registry row. Returns False if not found.
+
+        Does NOT remove CocoIndex-managed data (coco_snippets, etc.).
+        """
+        with self._conn() as conn:
+            result = conn.execute(
+                "DELETE FROM codebase_metadata WHERE name = %s", (name,)
+            )
+        return result.rowcount == 1
 
     # ------------------------------------------------------------------
     # CocoIndex table search

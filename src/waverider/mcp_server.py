@@ -312,6 +312,133 @@ def get_config() -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Codebase Registry Admin Tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def register_codebase(
+    name: str,
+    path: str,
+    description: str = "",
+    language: str = "mixed",
+    github_repo: str = "",
+    main_branch_name: str = "main",
+) -> str:
+    """Register a codebase in the registry.
+
+    Does not trigger an index run — the next poll cycle detects
+    last_indexed_commit = NULL and reindexes automatically.
+
+    Args:
+        name: Unique identifier (e.g. "identity")
+        path: Absolute path to the codebase on disk
+        description: Human-readable description
+        language: Primary language (python, typescript, ruby, mixed)
+        github_repo: GitHub slug (e.g. "waveapps/identity") — optional, for future auto-reindex
+        main_branch_name: Branch to track (default: main)
+    """
+    from pathlib import Path as _Path
+
+    from waverider.database import DatabaseManager
+
+    if not _Path(path).exists():
+        return f"Error: path does not exist: {path}"
+
+    db = DatabaseManager()
+    try:
+        cid = db.upsert_codebase_registration(
+            name=name,
+            path=path,
+            description=description,
+            language=language,
+            github_repo=github_repo or None,
+            main_branch_name=main_branch_name,
+        )
+        return (
+            f"Registered '{name}' (id={cid}). "
+            "Run `poetry run python scripts/reindex_if_changed.py --once` to index it."
+        )
+    except Exception as exc:
+        return f"Error: {exc}"
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def list_codebases() -> str:
+    """List all registered codebases and their reindex status.
+
+    Returns name, enabled flag, language, last indexed commit SHA, and path.
+    """
+    from waverider.database import DatabaseManager
+
+    db = DatabaseManager()
+    try:
+        rows = db.list_codebases()
+        if not rows:
+            return "No codebases registered. Run: poetry run python scripts/seed_registry.py"
+
+        header = f"{'NAME':<20} {'ENABLED':<8} {'LANG':<12} {'LAST COMMIT':<12} PATH"
+        sep = "-" * 90
+        lines = [header, sep]
+        for r in rows:
+            sha = (r.get("last_indexed_commit") or "never")[:8]
+            enabled = "yes" if r["enabled"] else "no"
+            lines.append(
+                f"{r['name']:<20} {enabled:<8} {r['language']:<12} {sha:<12} {r['path']}"
+            )
+        return "\n".join(lines)
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def set_codebase_enabled(name: str, enabled: bool) -> str:
+    """Enable or disable automatic reindexing for a codebase.
+
+    Disabled codebases are skipped by the reindex poller but remain in the registry.
+
+    Args:
+        name: Codebase name (as returned by list_codebases)
+        enabled: True to enable, False to disable
+    """
+    from waverider.database import DatabaseManager
+
+    db = DatabaseManager()
+    try:
+        ok = db.set_codebase_enabled(name, enabled)
+        if not ok:
+            return f"Codebase '{name}' not found."
+        state = "enabled" if enabled else "disabled"
+        return f"'{name}' is now {state}."
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def deregister_codebase(name: str) -> str:
+    """Remove a codebase from the registry.
+
+    Does not delete indexed data — CocoIndex-managed tables (coco_snippets, etc.)
+    are left intact and must be cleared separately if desired.
+
+    Args:
+        name: Codebase name to remove (as returned by list_codebases)
+    """
+    from waverider.database import DatabaseManager
+
+    db = DatabaseManager()
+    try:
+        ok = db.delete_codebase(name)
+        if not ok:
+            return f"Codebase '{name}' not found."
+        return f"'{name}' removed from registry. Indexed data was not deleted."
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     transport = os.getenv("MCP_TRANSPORT", "stdio")
     mcp.run(transport=transport)

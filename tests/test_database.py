@@ -336,4 +336,94 @@ def test_vector_search(db):
     assert results[0]["name"] == "alpha"
 
 
+# ---------------------------------------------------------------------------
+# Registry methods — new in codebase-registry feature
+# ---------------------------------------------------------------------------
 
+@requires_db
+class TestRegistryMethods:
+    def test_upsert_codebase_registration_creates_row(self, db, tmp_path):
+        cid = db.upsert_codebase_registration(
+            name="test-repo",
+            path=str(tmp_path),
+            description="Test repo",
+            language="python",
+            github_repo="waveapps/test-repo",
+            main_branch_name="main",
+        )
+        assert cid > 0
+        row = db.get_codebase("test-repo")
+        assert row["github_repo"] == "waveapps/test-repo"
+        assert row["main_branch_name"] == "main"
+        assert row["enabled"] is True
+        assert row["last_indexed_commit"] is None
+
+    def test_upsert_codebase_registration_idempotent(self, db, tmp_path):
+        cid1 = db.upsert_codebase_registration(
+            name="test-repo", path=str(tmp_path), description="v1",
+            language="python", github_repo="org/repo", main_branch_name="main",
+        )
+        cid2 = db.upsert_codebase_registration(
+            name="test-repo", path=str(tmp_path), description="v2",
+            language="typescript", github_repo="org/repo-new", main_branch_name="main",
+        )
+        assert cid1 == cid2
+        row = db.get_codebase("test-repo")
+        assert row["description"] == "v2"
+        assert row["github_repo"] == "org/repo-new"
+
+    def test_upsert_does_not_overwrite_last_indexed_commit(self, db, tmp_path):
+        db.upsert_codebase_registration(
+            name="test-repo", path=str(tmp_path), description="",
+            language="python", github_repo=None, main_branch_name="main",
+        )
+        db.update_last_indexed_commit("test-repo", "abc1234")
+        # Re-upsert must not clear the commit SHA
+        db.upsert_codebase_registration(
+            name="test-repo", path=str(tmp_path), description="updated",
+            language="python", github_repo=None, main_branch_name="main",
+        )
+        row = db.get_codebase("test-repo")
+        assert row["last_indexed_commit"] == "abc1234"
+
+    def test_get_enabled_codebases_filters_disabled(self, db, tmp_path):
+        db.upsert_codebase_registration(
+            name="enabled-repo", path=str(tmp_path), description="",
+            language="python", github_repo=None, main_branch_name="main",
+        )
+        db.upsert_codebase_registration(
+            name="disabled-repo", path=str(tmp_path), description="",
+            language="python", github_repo=None, main_branch_name="main",
+        )
+        db.set_codebase_enabled("disabled-repo", False)
+        enabled = db.get_enabled_codebases()
+        names = [r["name"] for r in enabled]
+        assert "enabled-repo" in names
+        assert "disabled-repo" not in names
+
+    def test_update_last_indexed_commit(self, db, tmp_path):
+        db.upsert_codebase_registration(
+            name="test-repo", path=str(tmp_path), description="",
+            language="python", github_repo=None, main_branch_name="main",
+        )
+        db.update_last_indexed_commit("test-repo", "deadbeef123")
+        row = db.get_codebase("test-repo")
+        assert row["last_indexed_commit"] == "deadbeef123"
+
+    def test_set_codebase_enabled_returns_false_for_unknown(self, db):
+        result = db.set_codebase_enabled("no-such-repo", False)
+        assert result is False
+
+    def test_delete_codebase(self, db, tmp_path):
+        db.upsert_codebase_registration(
+            name="to-delete", path=str(tmp_path), description="",
+            language="python", github_repo=None, main_branch_name="main",
+        )
+        assert db.get_codebase("to-delete") is not None
+        result = db.delete_codebase("to-delete")
+        assert result is True
+        assert db.get_codebase("to-delete") is None
+
+    def test_delete_codebase_returns_false_for_unknown(self, db):
+        result = db.delete_codebase("no-such-repo")
+        assert result is False
