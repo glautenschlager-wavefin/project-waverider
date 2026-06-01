@@ -173,7 +173,7 @@ def retrieve_code(query: str, codebase_name: str = "waverider", limit: int = 5) 
         WAVERIDER_SEARCH_BACKEND: 'postgres' (default) or 'neo4j' (Neo4j does not support semantic search)
         WAVERIDER_SEARCH_HYBRID: 'true' (default) or 'false' (disables keyword fusion)
     """
-    config = get_config()
+    config = _get_search_config()
     
     if config.is_neo4j():
         return (
