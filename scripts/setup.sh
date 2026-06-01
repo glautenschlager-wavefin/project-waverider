@@ -7,10 +7,11 @@
 #
 # What it does:
 #   1. Installs & starts Ollama, pulls the embedding model
-#   2. Starts Docker services (Neo4j)
+#   2. Starts Docker services (ParadeDB + Neo4j)
 #   3. Registers the MCP server with VS Code / GitHub Copilot
 #   4. Discovers locally cloned Wave repos
 #   5. Lets you pick which repos to index, then indexes them
+#   6. Optionally installs a cron job for automatic reindex checks
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -37,7 +38,7 @@ header() { echo -e "\n${BOLD}$*${NC}"; echo "$(printf '─%.0s' $(seq 1 60))"; }
 # Step 1: Ollama
 # ──────────────────────────────────────────────────────────────────────
 setup_ollama() {
-    header "Step 1/5 · Ollama (embedding engine)"
+    header "Step 1/6 · Ollama (embedding engine)"
 
     if command -v ollama &>/dev/null; then
         ok "Ollama already installed"
@@ -87,7 +88,7 @@ setup_ollama() {
 # Step 2: Docker services
 # ──────────────────────────────────────────────────────────────────────
 setup_docker() {
-    header "Step 2/5 · Docker services (Neo4j + Waverider image)"
+    header "Step 2/6 · Docker services (ParadeDB + Neo4j + Waverider image)"
 
     if ! docker info &>/dev/null; then
         fail "Docker daemon is not running. Start Rancher Desktop / Docker Desktop first."
@@ -110,23 +111,29 @@ setup_docker() {
     docker compose build waverider 2>&1 | tail -3
     ok "Waverider image built"
 
-    local neo4j_status
-    neo4j_status=$(docker compose ps --format '{{.Name}} {{.Status}}' 2>/dev/null | grep waverider-neo4j || true)
-    if echo "$neo4j_status" | grep -qi "up"; then
-        ok "Neo4j is already running"
-    else
-        info "Starting Neo4j…"
-        docker compose up -d neo4j
-        info "Waiting for Neo4j healthcheck…"
-        for i in $(seq 1 30); do
-            if docker compose ps --format '{{.Status}}' neo4j 2>/dev/null | grep -qi "healthy"; then
-                break
-            fi
-            sleep 3
-        done
-        docker compose ps --format '{{.Status}}' neo4j 2>/dev/null | grep -qi "healthy" \
-            || warn "Neo4j may still be starting up — indexing will proceed without it"
-    fi
+    info "Starting ParadeDB and Neo4j…"
+    docker compose up -d paradedb neo4j
+
+    info "Waiting for ParadeDB healthcheck…"
+    for i in $(seq 1 30); do
+        if docker compose ps --format '{{.Status}}' paradedb 2>/dev/null | grep -qi "healthy"; then
+            break
+        fi
+        sleep 3
+    done
+    docker compose ps --format '{{.Status}}' paradedb 2>/dev/null | grep -qi "healthy" \
+        || fail "ParadeDB failed to become healthy"
+
+    info "Waiting for Neo4j healthcheck…"
+    for i in $(seq 1 30); do
+        if docker compose ps --format '{{.Status}}' neo4j 2>/dev/null | grep -qi "healthy"; then
+            break
+        fi
+        sleep 3
+    done
+    docker compose ps --format '{{.Status}}' neo4j 2>/dev/null | grep -qi "healthy" \
+        || warn "Neo4j may still be starting up — indexing will proceed without graph enrichment"
+
     ok "Docker services ready"
 }
 
@@ -134,7 +141,7 @@ setup_docker() {
 # Step 3: Register MCP server with VS Code
 # ──────────────────────────────────────────────────────────────────────
 register_mcp() {
-    header "Step 3/5 · Register MCP server with VS Code"
+    header "Step 3/6 · Register MCP server with VS Code"
 
     local mcp_config_dir="$HOME/Library/Application Support/Code/User"
     local mcp_config="$mcp_config_dir/mcp.json"
@@ -247,7 +254,7 @@ INSTREOF
 # Step 4: Discover repos
 # ──────────────────────────────────────────────────────────────────────
 discover_repos() {
-    header "Step 4/5 · Discover codebases"
+    header "Step 4/6 · Discover codebases"
 
     # Ask for repos directory
     local repos_dir="$DEFAULT_REPOS_DIR"
@@ -348,7 +355,7 @@ EOF
 # Step 5: Index selected repos
 # ──────────────────────────────────────────────────────────────────────
 index_repos() {
-    header "Step 5/5 · Index codebases (inside Docker)"
+    header "Step 5/6 · Index codebases (inside Docker)"
 
     local total=${#SELECTED_REPOS[@]}
     local current=0
@@ -411,6 +418,38 @@ index_repos() {
 }
 
 # ──────────────────────────────────────────────────────────────────────
+# Step 6: Configure periodic reindex checks
+# ──────────────────────────────────────────────────────────────────────
+configure_reindex_cron() {
+    header "Step 6/6 · Configure periodic reindex checks (cron)"
+
+    local default_schedule="*/30 * * * *"
+    local default_log="/tmp/waverider-reindex-cron.log"
+    local enable_cron="y"
+
+    read -r -p "  Install automatic reindex cron job? [Y/n]: " enable_cron
+    if [[ "${enable_cron:-y}" =~ ^[Nn]$ ]]; then
+        info "Skipping cron setup"
+        return
+    fi
+
+    local cron_schedule="$default_schedule"
+    local cron_log="$default_log"
+    read -r -p "  Cron schedule [$default_schedule]: " user_schedule
+    cron_schedule="${user_schedule:-$default_schedule}"
+    read -r -p "  Cron log path [$default_log]: " user_log
+    cron_log="${user_log:-$default_log}"
+
+    if make -C "$PROJECT_DIR" cron-setup-index-updates \
+        CRON_SCHEDULE="$cron_schedule" \
+        CRON_LOG="$cron_log"; then
+        ok "Cron updater installed"
+    else
+        warn "Cron setup failed — you can retry with: make cron-setup-index-updates"
+    fi
+}
+
+# ──────────────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────────────
 main() {
@@ -424,6 +463,7 @@ main() {
     register_mcp
     discover_repos
     index_repos
+    configure_reindex_cron
 }
 
 main "$@"

@@ -35,6 +35,44 @@ ollama pull nomic-embed-text
 make index
 ```
 
+### Setup Wizard (Recommended)
+
+For first-time setup on a development machine, use the guided wizard:
+
+```bash
+make setup
+```
+
+The wizard performs these steps:
+
+1. Installs/starts Ollama and pulls `nomic-embed-text`
+2. Builds the Waverider image and starts ParadeDB + Neo4j
+3. Registers Waverider MCP in VS Code
+4. Lets you select local Wave repos to index
+5. Runs initial indexing for selected repos
+6. Prompts to install an automatic reindex cron job
+
+If enabled, the cron job runs:
+
+```bash
+docker compose run --rm --entrypoint python waverider scripts/reindex_if_changed.py --once
+```
+
+Cron defaults:
+
+- Schedule: `*/30 * * * *`
+- Log file: `/tmp/waverider-reindex-cron.log`
+- Tag: `WAVERIDER_REINDEX_UPDATES`
+
+You can install or update it manually at any time:
+
+```bash
+make cron-setup-index-updates
+make cron-setup-index-updates CRON_SCHEDULE="0 * * * *" CRON_LOG="/tmp/waverider-hourly.log"
+```
+
+When uninstalling Waverider (`make uninstall`), cron entries tagged `WAVERIDER_REINDEX_UPDATES` are removed automatically.
+
 Alternatively, use `poetry run` to run commands without activating the shell:
 ```bash
 poetry run python -m waverider.mcp_server

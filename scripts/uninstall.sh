@@ -5,6 +5,7 @@
 # Cleanly removes all Waverider artifacts from the local machine:
 #   - MCP server registration from VS Code
 #   - Copilot instructions file
+#   - Cron job for automatic reindex checks
 #   - Docker containers and volumes
 #   - Local config (~/.waverider)
 #
@@ -14,6 +15,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+CRON_TAG="WAVERIDER_REINDEX_UPDATES"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
 BOLD='\033[1m'; NC='\033[0m'
@@ -64,7 +66,16 @@ else
     skip "No instructions file found"
 fi
 
-# ── 3. Stop containers and remove volumes ────────────────────────────
+# ── 3. Remove cron job ──────────────────────────────────────────────
+current_crontab="$(crontab -l 2>/dev/null || true)"
+if echo "$current_crontab" | grep -q "$CRON_TAG"; then
+    printf "%s\n" "$current_crontab" | grep -v "$CRON_TAG" | crontab -
+    ok "Removed cron entries tagged $CRON_TAG"
+else
+    skip "No cron entries tagged $CRON_TAG"
+fi
+
+# ── 4. Stop containers and remove volumes ────────────────────────────
 cd "$PROJECT_DIR"
 if docker compose ps -q 2>/dev/null | grep -q .; then
     docker compose down -v 2>/dev/null
@@ -76,7 +87,7 @@ else
     skip "No running containers or volumes"
 fi
 
-# ── 4. Remove local config ──────────────────────────────────────────
+# ── 5. Remove local config ──────────────────────────────────────────
 if [[ -f "$HOME/.waverider/config.env" ]]; then
     rm "$HOME/.waverider/config.env"
     rmdir "$HOME/.waverider" 2>/dev/null || true
@@ -85,7 +96,7 @@ else
     skip "No local config found"
 fi
 
-# ── 5. Stop Ollama and remove the embedding model ───────────────────
+# ── 6. Stop Ollama and remove the embedding model ───────────────────
 if command -v ollama &>/dev/null; then
     if ollama list 2>/dev/null | grep -q nomic-embed-text; then
         ollama rm nomic-embed-text 2>/dev/null

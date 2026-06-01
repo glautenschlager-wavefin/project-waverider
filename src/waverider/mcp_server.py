@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from waverider.config import get_config
+from waverider.config import get_config as _get_search_config
 
 
 def _load_project_env() -> None:
@@ -42,7 +42,7 @@ def search_codebase(query: str, codebase_name: str = "waverider", limit: int = 1
         WAVERIDER_SEARCH_BACKEND: 'postgres' (default) or 'neo4j'
         WAVERIDER_FALLBACK_ENABLED: 'true' (default) or 'false'
     """
-    config = get_config()
+    config = _get_search_config()
     
     try:
         if config.is_postgres():

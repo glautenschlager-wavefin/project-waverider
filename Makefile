@@ -1,4 +1,8 @@
-.PHONY: help setup uninstall install format lint lint-fix type-check test all-checks mcp-start shell index index-repo index-all clean docker-build docker-up docker-down docker-logs docker-ps token-analysis db-shell db-status
+.PHONY: help setup uninstall install format lint lint-fix type-check test all-checks mcp-start shell index index-repo index-all clean docker-build docker-up docker-down docker-logs docker-ps token-analysis db-shell db-status cron-setup-index-updates
+
+CRON_SCHEDULE ?= */30 * * * *
+CRON_LOG ?= /tmp/waverider-reindex-cron.log
+CRON_TAG ?= WAVERIDER_REINDEX_UPDATES
 
 help:
 	@echo "Waverider Development Commands"
@@ -16,6 +20,7 @@ help:
 	@echo "make index           Index waverider itself (CocoIndex incremental)"
 	@echo "make index-repo REPO=<name>  Index a Wave repo (incremental)"
 	@echo "make index-all       Index all Wave repos (incremental)"
+	@echo "make cron-setup-index-updates  Install cron job to check/reindex updated codebases"
 	@echo "make clean           Remove cache and temporary files"
 	@echo ""
 	@echo "Database:"
@@ -135,5 +140,12 @@ docker-down:
 
 docker-logs:
 	docker compose logs -f
+
+cron-setup-index-updates:
+	@echo "Installing cron job ($(CRON_TAG)) with schedule: $(CRON_SCHEDULE)"
+	@(crontab -l 2>/dev/null | grep -v "$(CRON_TAG)"; \
+		echo "$(CRON_SCHEDULE) cd \"$(CURDIR)\" && /bin/bash -lc 'docker compose run --rm --entrypoint python waverider scripts/reindex_if_changed.py --once >> \"$(CRON_LOG)\" 2>&1' # $(CRON_TAG)") | crontab -
+	@echo "Cron job installed. Current crontab entries tagged $(CRON_TAG):"
+	@crontab -l | grep "$(CRON_TAG)" || true
 
 .DEFAULT_GOAL := help
