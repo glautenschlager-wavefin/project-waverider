@@ -87,7 +87,7 @@ index-repo:
 
 index-all:
 	@echo "Indexing all Wave repos (incremental)..."
-	@for repo in identity reef payroll next-wave central-risk next-accounting accounting; do \
+	@for repo in identity reef payroll embedded-payroll next-wave central-risk next-accounting accounting; do \
 		echo ""; echo ">>> $$repo"; \
 		$(MAKE) index-repo REPO=$$repo || true; \
 	done

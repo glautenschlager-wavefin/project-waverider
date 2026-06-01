@@ -16,6 +16,7 @@ Key design:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import pathlib
@@ -25,11 +26,14 @@ from typing import AsyncIterator
 import asyncpg
 import httpx
 import numpy as np
+from numpy.typing import NDArray
 
 import cocoindex as coco
 from cocoindex.connectors import localfs, postgres
+from cocoindex.connectorkits import target
 from cocoindex.resources.file import PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
+from cocoindex.resources.schema import VectorSchema
 
 from waverider.indexer import CodeSnippetInfo, CodebaseIndexer
 from waverider.treesitter_parser import extract_snippets
@@ -46,6 +50,9 @@ DATABASE_URL: str = os.getenv(
 OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
 EMBED_MODEL: str = os.getenv("OLLAMA_MODEL", "nomic-embed-text")
 EMBED_DIMS: int = 768
+MAX_EMBED_CHARS: int = int(os.getenv("MAX_EMBED_CHARS", "4000"))
+MAX_EMBED_CONCURRENCY: int = int(os.getenv("MAX_EMBED_CONCURRENCY", "2"))
+EMBED_MAX_RETRIES: int = 3
 
 # CocoIndex-managed table name for code snippets.
 TABLE_NAME = "coco_snippets"
@@ -85,12 +92,16 @@ class OllamaEmbedder:
 
     Implements ``get_sentence_embedding_dimension()`` so CocoIndex can infer
     the vector column size when building the Postgres table schema.
+
+    Rate-limited via asyncio.Semaphore to avoid overwhelming Ollama with
+    concurrent requests from CocoIndex's parallel file processing.
     """
 
     def __init__(self, model: str = EMBED_MODEL, base_url: str = OLLAMA_URL) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
-        self._client = httpx.AsyncClient(timeout=60.0)
+        self._client = httpx.AsyncClient(timeout=120.0)
+        self._semaphore = asyncio.Semaphore(MAX_EMBED_CONCURRENCY)
 
     def get_sentence_embedding_dimension(self) -> int:
         """Return the embedding dimension (768 for nomic-embed-text)."""
@@ -105,13 +116,35 @@ class OllamaEmbedder:
         return f"ollama:{self.model}:{self.base_url}:{EMBED_DIMS}"
 
     async def embed(self, text: str) -> NDArray[np.float32]:
-        """Generate a 768-dim embedding vector for *text* via Ollama."""
-        response = await self._client.post(
-            f"{self.base_url}/api/embeddings",
-            json={"model": self.model, "prompt": text},
-        )
-        response.raise_for_status()
-        return np.array(response.json()["embedding"], dtype=np.float32)
+        """Generate a 768-dim embedding vector for *text* via Ollama.
+
+        Truncates input to MAX_EMBED_CHARS to stay within the model's context
+        window. Retries transient errors with exponential backoff.
+        """
+        # Truncate to stay within model context window
+        if len(text) > MAX_EMBED_CHARS:
+            text = text[:MAX_EMBED_CHARS]
+
+        async with self._semaphore:
+            last_exc: Exception | None = None
+            for attempt in range(EMBED_MAX_RETRIES):
+                try:
+                    response = await self._client.post(
+                        f"{self.base_url}/api/embeddings",
+                        json={"model": self.model, "prompt": text},
+                    )
+                    response.raise_for_status()
+                    return np.array(response.json()["embedding"], dtype=np.float32)
+                except (httpx.HTTPStatusError, httpx.ReadTimeout, httpx.ConnectError) as exc:
+                    last_exc = exc
+                    if attempt < EMBED_MAX_RETRIES - 1:
+                        delay = 2 ** (attempt + 1)  # 2s, 4s
+                        log.warning(
+                            "Embed attempt %d failed (%s), retrying in %ds...",
+                            attempt + 1, type(exc).__name__, delay,
+                        )
+                        await asyncio.sleep(delay)
+            raise last_exc  # type: ignore[misc]
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -135,7 +168,7 @@ class CodeSnippetRow:
     start_line: int
     end_line: int
     language: str
-    embedding: list[float]  # Store as list; CocoIndex handles float serialization
+    embedding: NDArray[np.float32]  # vector(768) via column_overrides VectorSchema
 
 
 # ---------------------------------------------------------------------------
@@ -143,10 +176,42 @@ class CodeSnippetRow:
 # ---------------------------------------------------------------------------
 
 
+async def _ensure_table(pool: asyncpg.Pool) -> None:
+    """Pre-create the shared coco_snippets table if it doesn't exist.
+
+    With managed_by=USER CocoIndex skips all DDL, so we handle it ourselves.
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+                codebase_name TEXT NOT NULL,
+                id BIGINT NOT NULL,
+                file_path TEXT NOT NULL,
+                snippet_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL,
+                start_line BIGINT NOT NULL,
+                end_line BIGINT NOT NULL,
+                language TEXT NOT NULL,
+                embedding vector({EMBED_DIMS}),
+                PRIMARY KEY (codebase_name, id)
+            )
+        """)
+        await conn.execute(f"""
+            CREATE INDEX IF NOT EXISTS {TABLE_NAME}_embedding_idx
+            ON {TABLE_NAME} USING ivfflat (embedding vector_cosine_ops)
+        """)
+        await conn.execute(f"""
+            CREATE INDEX IF NOT EXISTS {TABLE_NAME}_content_gin
+            ON {TABLE_NAME} USING GIN (to_tsvector('english', content))
+        """)
+
+
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     embedder = OllamaEmbedder()
     async with await asyncpg.create_pool(DATABASE_URL) as pool:
+        await _ensure_table(pool)
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, embedder)
         yield
@@ -202,12 +267,22 @@ async def process_file(
     relative_path = str(file.file_path.path)
 
     for snippet in snippets:
+        if not snippet.content or not snippet.content.strip():
+            continue
+
         try:
             embedding = await embedder.embed(snippet.content)
         except Exception as exc:
             log.warning(
                 "Embedding failed for snippet '%s' in %s: %s",
                 snippet.name, relative_path, exc,
+            )
+            continue
+
+        if embedding.size == 0:
+            log.warning(
+                "Empty embedding for snippet '%s' in %s, skipping",
+                snippet.name, relative_path,
             )
             continue
 
@@ -222,7 +297,7 @@ async def process_file(
                 start_line=snippet.start_line,
                 end_line=snippet.end_line,
                 language=snippet.language,
-                embedding=embedding.tolist(),  # Convert NDArray to list
+                embedding=embedding,  # numpy array; CocoIndex _vector_encoder handles serialization
             )
         )
 
@@ -235,22 +310,22 @@ async def process_file(
 @coco.fn
 async def app_main(sourcedir: pathlib.Path, codebase_name: str) -> None:
     """CocoIndex main function: mount the Postgres target and walk the source directory."""
-    # Mount the table target using CocoIndex's schema inference
-    # Now that embedding is list[float], CocoIndex should be able to handle it
+    # Mount the table target with explicit vector(768) column override for embedding
     target_table = await postgres.mount_table_target(
         PG_DB,
         table_name=TABLE_NAME,
         table_schema=await postgres.TableSchema.from_class(
-            CodeSnippetRow, primary_key=["id"]
+            CodeSnippetRow,
+            primary_key=["codebase_name", "id"],
+            column_overrides={
+                "embedding": VectorSchema(dtype=np.dtype("float32"), size=EMBED_DIMS)
+            },
         ),
+        managed_by=target.ManagedBy.USER,
     )
 
-    # HNSW index for O(log n) cosine similarity search (if embedding is vector type).
-    # This will work if Postgres mapped list[float] → vector type
-    try:
-        target_table.declare_vector_index(column="embedding")
-    except Exception as e:
-        log.warning("Could not declare vector index: %s", e)
+    # HNSW index for O(log n) cosine similarity search
+    target_table.declare_vector_index(column="embedding")
 
     # GIN index on tsvector for keyword (BM25-style) search via the fallback path.
     target_table.declare_sql_command_attachment(
