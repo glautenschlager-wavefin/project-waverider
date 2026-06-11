@@ -8,6 +8,36 @@
 
 ---
 
+## Remote-clone model
+
+Codebases are identified by their GitHub repo (`github_repo`, e.g.
+`waveaccounting/identity`). WaveRider clones each enabled repo into a managed
+location (`WAVERIDER_REPO_ROOT`, default `~/.waverider/repos/<name>`); the `path`
+column is managed automatically and is `NULL` until the first successful clone.
+
+### Workflow
+
+1. **Discover** org repos (registers them disabled):
+   `poetry run python scripts/discover_repos.py`
+2. **Enable** the common services:
+   `poetry run python scripts/seed_default_repos.py`
+   (or enable individually via the `set_codebase_enabled` MCP tool / your own product repos)
+3. **Index**: `poetry run python scripts/reindex_if_changed.py --once`
+   (clones/fetches each enabled repo, reindexes those whose HEAD changed)
+
+### Environment
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `GITHUB_TOKEN` | (required) | PAT for clone + discovery |
+| `WAVERIDER_REPO_ROOT` | `~/.waverider/repos` | Managed clone root |
+| `WAVERIDER_GITHUB_ORG` | `waveaccounting` | Org to discover |
+
+Sync failures are recorded on the codebase row (`last_sync_error`,
+`last_sync_error_at`) and shown by `list_codebases`; they auto-retry next cycle.
+
+---
+
 ## Chosen Approach: Git SHA Polling
 
 A polling script (`scripts/reindex_if_changed.py`) runs on a configurable interval (e.g., cron every 5–15 minutes):
@@ -190,19 +220,22 @@ poetry run python scripts/reindex_if_changed.py --interval 300
 
 ## Initial Population
 
-After deploying the schema migration, run once to seed the existing seven repos:
+After deploying the schema migration, discover the org's repos and enable the
+common services:
 
 ```bash
-poetry run python scripts/seed_registry.py
+poetry run python scripts/discover_repos.py
+poetry run python scripts/seed_default_repos.py
 ```
 
-Then do an initial reindex (same as today) to populate `last_indexed_commit` for each:
+Then do an initial reindex to clone each enabled repo and populate
+`last_indexed_commit`:
 
 ```bash
 poetry run python scripts/reindex_if_changed.py --once
 ```
 
-Because `last_indexed_commit` starts as `NULL`, the poller will treat every enabled codebase as "changed" on first run and index them all. This replaces the manual `index_wave_repos.sh` invocation.
+Because `last_indexed_commit` starts as `NULL`, the poller will treat every enabled codebase as "changed" on first run and index them all.
 
 ---
 

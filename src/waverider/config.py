@@ -6,6 +6,7 @@ for keyword and semantic search. Enables side-by-side validation during migratio
 
 import os
 from enum import Enum
+from pathlib import Path
 from typing import Literal
 
 _BACKEND_TYPE = Literal["postgres", "neo4j"]
@@ -86,3 +87,34 @@ def reset_config() -> None:
     """Reset the global config instance. Mainly for testing."""
     global _CONFIG
     _CONFIG = None
+
+
+# ---------------------------------------------------------------------------
+# Remote indexing configuration
+# ---------------------------------------------------------------------------
+
+_DEFAULT_GITHUB_ORG = "waveaccounting"
+
+
+def get_github_org() -> str:
+    """Return the GitHub org to discover (env WAVERIDER_GITHUB_ORG)."""
+    return os.getenv("WAVERIDER_GITHUB_ORG", _DEFAULT_GITHUB_ORG)
+
+
+def get_repo_root() -> Path:
+    """Return the root dir for WaveRider-managed clones (env WAVERIDER_REPO_ROOT)."""
+    override = os.getenv("WAVERIDER_REPO_ROOT")
+    if override:
+        return Path(override)
+    return Path.home() / ".waverider" / "repos"
+
+
+def get_github_token() -> str:
+    """Return the GitHub PAT (env GITHUB_TOKEN). Raises if unset."""
+    token = os.getenv("GITHUB_TOKEN")
+    if not token:
+        raise RuntimeError(
+            "GITHUB_TOKEN is not set. Export a GitHub PAT with repo read access "
+            "to clone and discover Wave repositories."
+        )
+    return token

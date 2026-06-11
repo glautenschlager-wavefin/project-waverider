@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Poll enabled codebases for new commits and reindex on change.
+"""Syncs each enabled codebase's managed clone, then reindexes those whose HEAD SHA changed.
 
 Usage:
     # Check once and exit:
@@ -8,7 +8,8 @@ Usage:
     # Run forever, checking every 5 minutes:
     poetry run python scripts/reindex_if_changed.py --interval 300
 
-    # Preview what would be reindexed without running anything:
+    # Preview what would be reindexed (still syncs managed clones, but skips
+    # all reindexing and database writes):
     poetry run python scripts/reindex_if_changed.py --once --dry-run
 """
 from __future__ import annotations
@@ -20,46 +21,31 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from waverider import repo_manager
 from waverider.database import DatabaseManager
+from waverider.repo_manager import RepoSyncError
 
 log = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-def get_remote_sha(path: str, branch: str) -> Optional[str]:
-    """Fetch origin and return the remote HEAD SHA, or None on failure."""
-    try:
-        subprocess.run(
-            ["git", "-C", path, "fetch", "origin", branch],
-            check=True,
-            capture_output=True,
-            timeout=30,
-        )
-        result = subprocess.run(
-            ["git", "-C", path, "rev-parse", f"origin/{branch}"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        return result.stdout.strip()
-    except Exception as exc:
-        log.warning("git failed for %s: %s", path, exc)
-        return None
-
-
-def run_reindex(codebase: Dict[str, Any], project_root: Path, dry_run: bool) -> bool:
-    """Run build_index.py for the given codebase. Returns True on success."""
+def run_reindex(
+    codebase: Dict[str, Any],
+    local_path: Path,
+    project_root: Path,
+    dry_run: bool,
+) -> bool:
+    """Run build_index.py for the given codebase clone. Returns True on success."""
     script = project_root / "scripts" / "build_index.py"
     cmd = [
         sys.executable,
         str(script),
-        "--codebase-path", codebase["path"],
+        "--codebase-path", str(local_path),
         "--index-name", codebase["name"],
         "--description", codebase.get("description") or "",
         "--language", codebase.get("language") or "mixed",
@@ -77,7 +63,7 @@ def poll_once(
     project_root: Path,
     dry_run: bool,
 ) -> Dict[str, int]:
-    """Check all enabled codebases and reindex those with new commits.
+    """Sync each enabled codebase's clone, then reindex those whose HEAD changed.
 
     Returns a summary dict: {checked, reindexed, skipped, failed}.
     """
@@ -86,12 +72,19 @@ def poll_once(
 
     for cb in codebases:
         summary["checked"] += 1
-        sha = get_remote_sha(cb["path"], cb["main_branch_name"])
-
-        if sha is None:
-            log.warning("Could not get remote SHA for %s — skipping", cb["name"])
+        try:
+            sha = repo_manager.ensure_current(
+                cb["github_repo"], cb["name"], cb["main_branch_name"]
+            )
+        except RepoSyncError as exc:
+            log.warning("Sync failed for %s: %s", cb["name"], exc)
+            if not dry_run:
+                db.record_sync_error(cb["name"], str(exc))
             summary["failed"] += 1
             continue
+
+        if not dry_run:
+            db.clear_sync_error(cb["name"])
 
         if sha == cb.get("last_indexed_commit"):
             log.debug("%s is up to date (%s)", cb["name"], sha[:8])
@@ -101,7 +94,11 @@ def poll_once(
         prev = (cb.get("last_indexed_commit") or "null")[:8]
         log.info("%s: new commit %s (was %s)", cb["name"], sha[:8], prev)
 
-        success = run_reindex(cb, project_root, dry_run)
+        local = repo_manager.local_path(cb["name"])
+        if not dry_run:
+            db.update_codebase_path(cb["name"], str(local))
+
+        success = run_reindex(cb, local, project_root, dry_run)
         if success:
             if not dry_run:
                 db.update_last_indexed_commit(cb["name"], sha)
@@ -126,7 +123,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Log what would be reindexed without running build_index.py",
+        help="Sync managed clones but skip reindexing and all database writes",
     )
     parser.add_argument(
         "--log-level",

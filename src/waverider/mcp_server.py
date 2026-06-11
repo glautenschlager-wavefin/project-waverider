@@ -317,48 +317,96 @@ def get_config() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _run_discovery(org: str, dry_run: bool = False) -> dict:
+    """Shared discovery runner — wraps scripts/discover_repos.run_discovery."""
+    import importlib.util
+    from pathlib import Path as _Path
+
+    from waverider import config
+    from waverider.database import DatabaseManager
+
+    script = _Path(__file__).resolve().parent.parent.parent / "scripts" / "discover_repos.py"
+    spec = importlib.util.spec_from_file_location("discover_repos", script)
+    dmod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(dmod)  # type: ignore[union-attr]
+
+    token = config.get_github_token()
+    db = DatabaseManager()
+    db.init_schema()
+    try:
+        return dmod.run_discovery(db, org=org, token=token, dry_run=dry_run)
+    finally:
+        db.close()
+
+
+@mcp.tool()
+def discover_codebases(org: str = "") -> str:
+    """Discover repos in a GitHub org and register new ones (disabled).
+
+    Newly discovered repos are added to the registry with enabled=False so an
+    admin can choose which to index. Existing codebases are left untouched.
+    Requires GITHUB_TOKEN to be set.
+
+    Args:
+        org: GitHub org to scan (default: WAVERIDER_GITHUB_ORG / "waveaccounting")
+    """
+    from waverider import config
+
+    target_org = org.strip() or config.get_github_org()
+    try:
+        summary = _run_discovery(target_org, dry_run=False)
+    except Exception as exc:
+        return f"Error: {exc}"
+    return (
+        f"Discovery of '{target_org}' complete: "
+        f"discovered={summary['discovered']}, new={summary['new']} (disabled), "
+        f"existing={summary['existing']}. "
+        "Enable repos with set_codebase_enabled(name, True)."
+    )
+
+
 @mcp.tool()
 def register_codebase(
     name: str,
-    path: str,
+    github_repo: str,
     description: str = "",
     language: str = "mixed",
-    github_repo: str = "",
     main_branch_name: str = "main",
+    enabled: bool = True,
 ) -> str:
-    """Register a codebase in the registry.
+    """Register a remote codebase in the registry.
 
-    Does not trigger an index run — the next poll cycle detects
-    last_indexed_commit = NULL and reindexes automatically.
+    The repo is cloned and indexed automatically by the next poll cycle
+    (last_indexed_commit = NULL triggers a reindex). The local clone path is
+    managed by WaveRider — do not pass a local path.
 
     Args:
         name: Unique identifier (e.g. "identity")
-        path: Absolute path to the codebase on disk
+        github_repo: GitHub slug, e.g. "waveaccounting/identity" (required)
         description: Human-readable description
         language: Primary language (python, typescript, ruby, mixed)
-        github_repo: GitHub slug (e.g. "waveapps/identity") — optional, for future auto-reindex
         main_branch_name: Branch to track (default: main)
+        enabled: Whether the poller should index it (default: True)
     """
-    from pathlib import Path as _Path
-
     from waverider.database import DatabaseManager
 
-    if not _Path(path).exists():
-        return f"Error: path does not exist: {path}"
+    if not github_repo.strip():
+        return "Error: github_repo is required (e.g. 'waveaccounting/identity')."
 
     db = DatabaseManager()
     try:
         cid = db.upsert_codebase_registration(
             name=name,
-            path=path,
+            path=None,
             description=description,
             language=language,
-            github_repo=github_repo or None,
+            github_repo=github_repo.strip(),
             main_branch_name=main_branch_name,
+            enabled=enabled,
         )
         return (
             f"Registered '{name}' (id={cid}). "
-            "Run `poetry run python scripts/reindex_if_changed.py --once` to index it."
+            "Run `poetry run python scripts/reindex_if_changed.py --once` to clone & index it."
         )
     except Exception as exc:
         return f"Error: {exc}"
@@ -370,7 +418,8 @@ def register_codebase(
 def list_codebases() -> str:
     """List all registered codebases and their reindex status.
 
-    Returns name, enabled flag, language, last indexed commit SHA, and path.
+    Returns name, enabled flag, language, last indexed commit, GitHub repo,
+    and any recorded sync error.
     """
     from waverider.database import DatabaseManager
 
@@ -378,20 +427,28 @@ def list_codebases() -> str:
     try:
         rows = db.list_codebases()
         if not rows:
-            return "No codebases registered. Run: poetry run python scripts/seed_registry.py"
+            return "No codebases registered. Run: poetry run python scripts/discover_repos.py"
 
-        header = f"{'NAME':<20} {'ENABLED':<8} {'LANG':<12} {'LAST COMMIT':<12} PATH"
-        sep = "-" * 90
+        header = (
+            f"{'NAME':<22} {'ENABLED':<8} {'LANG':<10} "
+            f"{'LAST COMMIT':<12} {'GITHUB REPO':<28} SYNC ERROR"
+        )
+        sep = "-" * 110
         lines = [header, sep]
         for r in rows:
             sha = (r.get("last_indexed_commit") or "never")[:8]
             enabled = "yes" if r["enabled"] else "no"
+            repo = r.get("github_repo") or "-"
+            err = (r.get("last_sync_error") or "").splitlines()
+            err_text = err[0][:40] if err else ""
             lines.append(
-                f"{r['name']:<20} {enabled:<8} {r['language']:<12} {sha:<12} {r['path']}"
+                f"{r['name']:<22} {enabled:<8} {r['language']:<10} "
+                f"{sha:<12} {repo:<28} {err_text}"
             )
         return "\n".join(lines)
     finally:
         db.close()
+
 
 
 @mcp.tool()

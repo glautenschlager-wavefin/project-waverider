@@ -161,7 +161,10 @@ ALTER TABLE codebase_metadata
     ADD COLUMN IF NOT EXISTS enabled             BOOLEAN NOT NULL DEFAULT true,
     ADD COLUMN IF NOT EXISTS github_repo         TEXT,
     ADD COLUMN IF NOT EXISTS main_branch_name    TEXT    NOT NULL DEFAULT 'main',
-    ADD COLUMN IF NOT EXISTS last_indexed_commit TEXT
+    ADD COLUMN IF NOT EXISTS last_indexed_commit TEXT,
+    ADD COLUMN IF NOT EXISTS last_sync_error     TEXT,
+    ADD COLUMN IF NOT EXISTS last_sync_error_at  TIMESTAMPTZ;
+ALTER TABLE codebase_metadata ALTER COLUMN path DROP NOT NULL;
 """
 
 
@@ -528,22 +531,26 @@ class DatabaseManager:
     def upsert_codebase_registration(
         self,
         name: str,
-        path: str,
+        path: Optional[str] = None,
         description: str = "",
         language: str = "mixed",
         github_repo: Optional[str] = None,
         main_branch_name: str = "main",
+        enabled: bool = True,
     ) -> int:
         """Insert or update a codebase registry row.
 
-        Does NOT overwrite ``enabled`` or ``last_indexed_commit`` on conflict.
+        On INSERT, ``enabled`` is set from the argument. On CONFLICT, ``enabled``
+        and ``last_indexed_commit`` are preserved (not overwritten) so that
+        re-discovery never re-disables an admin-enabled codebase.
         """
         with self._conn() as conn:
             row = conn.execute(
                 """
                 INSERT INTO codebase_metadata
-                    (name, path, description, language, github_repo, main_branch_name, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    (name, path, description, language, github_repo,
+                     main_branch_name, enabled, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (name) DO UPDATE SET
                     path             = EXCLUDED.path,
                     description      = EXCLUDED.description,
@@ -553,7 +560,8 @@ class DatabaseManager:
                     updated_at       = NOW()
                 RETURNING id
                 """,
-                (name, path, description, language, github_repo, main_branch_name),
+                (name, path, description, language, github_repo,
+                 main_branch_name, enabled),
             ).fetchone()
             if row is None:
                 raise RuntimeError(f"upsert_codebase_registration failed for '{name}'")
@@ -568,15 +576,62 @@ class DatabaseManager:
         return [dict(r) for r in rows]
 
     def update_last_indexed_commit(self, name: str, sha: str) -> None:
-        """Record the commit SHA that was last successfully indexed."""
+        """Record the commit SHA that was last successfully indexed.
+
+        Also clears any recorded sync error, since a successful index implies a
+        successful sync.
+        """
         with self._conn() as conn:
             conn.execute(
                 """
                 UPDATE codebase_metadata
-                SET last_indexed_commit = %s, updated_at = NOW()
+                SET last_indexed_commit = %s,
+                    last_sync_error     = NULL,
+                    last_sync_error_at  = NULL,
+                    updated_at          = NOW()
                 WHERE name = %s
                 """,
                 (sha, name),
+            )
+
+    def update_codebase_path(self, name: str, path: str) -> None:
+        """Write back the WaveRider-managed clone path for a codebase."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE codebase_metadata
+                SET path = %s, updated_at = NOW()
+                WHERE name = %s
+                """,
+                (path, name),
+            )
+
+    def record_sync_error(self, name: str, message: str) -> None:
+        """Record a RepoSyncError message + timestamp on the codebase record."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE codebase_metadata
+                SET last_sync_error = %s, last_sync_error_at = NOW(), updated_at = NOW()
+                WHERE name = %s
+                """,
+                (message, name),
+            )
+
+    def clear_sync_error(self, name: str) -> None:
+        """Clear any recorded sync error after a successful sync.
+
+        Only writes when an error is currently recorded, so an up-to-date repo
+        that never failed is left untouched.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE codebase_metadata
+                SET last_sync_error = NULL, last_sync_error_at = NULL, updated_at = NOW()
+                WHERE name = %s AND last_sync_error IS NOT NULL
+                """,
+                (name,),
             )
 
     def set_codebase_enabled(self, name: str, enabled: bool) -> bool:

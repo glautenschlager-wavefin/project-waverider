@@ -44,6 +44,12 @@ explore_graph(entity_name="search_embeddings", codebase_name="waverider", relati
 
 ---
 
+### `discover_codebases`
+**Purpose**: Discover repos in a GitHub org and register new ones (disabled).
+**Parameters**: `org` (default: `waveaccounting`). Requires `GITHUB_TOKEN`.
+
+---
+
 ## Agent Decision Tree
 
 Default stance: for code-understanding tasks in Wave services, use Waverider before manual local file search.
