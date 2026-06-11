@@ -86,6 +86,20 @@ class TestRegisterCodebaseRemote:
         assert row["github_repo"] == "waveaccounting/identity"
         assert row["path"] is None
 
+    def test_idempotent_registration(self):
+        from waverider.mcp_server import register_codebase
+        from waverider.database import DatabaseManager
+        first = register_codebase(name="reef", github_repo="waveaccounting/reef")
+        second = register_codebase(name="reef", github_repo="waveaccounting/reef")
+        assert "Registered" in first
+        assert "Registered" in second
+        db = DatabaseManager(dsn=_TEST_DSN)
+        try:
+            rows = [r for r in db.list_codebases() if r["name"] == "reef"]
+        finally:
+            db.close()
+        assert len(rows) == 1
+
 
 # ---------------------------------------------------------------------------
 # list_codebases
@@ -189,9 +203,7 @@ class TestListCodebasesShowsSyncError:
 class TestDiscoverCodebases:
     def test_returns_summary_text(self):
         from waverider import mcp_server
-        from waverider.github_discovery import RepoInfo
         from unittest.mock import patch
-        repos = [RepoInfo("identity", "waveaccounting/identity", "main", "id", "python")]
         with patch.object(mcp_server, "_run_discovery", return_value={
             "discovered": 1, "new": 1, "existing": 0
         }) as run:
