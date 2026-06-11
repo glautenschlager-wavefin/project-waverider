@@ -427,3 +427,51 @@ class TestRegistryMethods:
     def test_delete_codebase_returns_false_for_unknown(self, db):
         result = db.delete_codebase("no-such-repo")
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Remote indexing — path write-back & sync-error tracking
+# ---------------------------------------------------------------------------
+
+
+@requires_db
+class TestRemoteIndexingColumns:
+    def test_upsert_with_null_path(self, db):
+        cid = db.upsert_codebase_registration(
+            name="identity", path=None, github_repo="waveaccounting/identity",
+            enabled=False,
+        )
+        assert cid > 0
+        row = db.get_codebase("identity")
+        assert row["path"] is None
+        assert row["enabled"] is False
+        assert row["github_repo"] == "waveaccounting/identity"
+
+    def test_upsert_preserves_enabled_on_conflict(self, db):
+        db.upsert_codebase_registration(name="reef", path=None,
+                                        github_repo="waveaccounting/reef", enabled=False)
+        db.set_codebase_enabled("reef", True)
+        # Re-discovery upsert with enabled=False must NOT flip it back off
+        db.upsert_codebase_registration(name="reef", path=None,
+                                        github_repo="waveaccounting/reef", enabled=False)
+        assert db.get_codebase("reef")["enabled"] is True
+
+    def test_update_codebase_path(self, db):
+        db.upsert_codebase_registration(name="api", path=None,
+                                        github_repo="waveaccounting/api", enabled=True)
+        db.update_codebase_path("api", "/tmp/clones/api")
+        assert db.get_codebase("api")["path"] == "/tmp/clones/api"
+
+    def test_record_and_clear_sync_error(self, db):
+        db.upsert_codebase_registration(name="nav", path=None,
+                                        github_repo="waveaccounting/nav", enabled=True)
+        db.record_sync_error("nav", "fetch failed: timeout")
+        row = db.get_codebase("nav")
+        assert row["last_sync_error"] == "fetch failed: timeout"
+        assert row["last_sync_error_at"] is not None
+        # A successful commit clears the error
+        db.update_last_indexed_commit("nav", "abcdef123456")
+        row = db.get_codebase("nav")
+        assert row["last_sync_error"] is None
+        assert row["last_sync_error_at"] is None
+        assert row["last_indexed_commit"] == "abcdef123456"
