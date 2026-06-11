@@ -63,44 +63,28 @@ import waverider.mcp_server as _srv
 
 
 # ---------------------------------------------------------------------------
-# register_codebase
+# register_codebase (remote-first)
 # ---------------------------------------------------------------------------
 
 @requires_db
-class TestRegisterCodebase:
-    def test_registers_new_codebase(self, tmp_path):
-        result = _srv.register_codebase(
-            name="my-repo",
-            path=str(tmp_path),
-            description="Test",
-            language="python",
-            github_repo="waveapps/my-repo",
-            main_branch_name="main",
-        )
-        assert "my-repo" in result
-        assert "Error" not in result
+class TestRegisterCodebaseRemote:
+    def test_register_requires_github_repo(self):
+        from waverider.mcp_server import register_codebase
+        out = register_codebase(name="x", github_repo="")
+        assert "github_repo" in out.lower()
 
+    def test_register_with_null_path(self):
+        from waverider.mcp_server import register_codebase
+        from waverider.database import DatabaseManager
+        out = register_codebase(name="identity", github_repo="waveaccounting/identity")
+        assert "Registered" in out
         db = DatabaseManager(dsn=_TEST_DSN)
-        db.init_schema()
-        row = db.get_codebase("my-repo")
-        db.close()
-        assert row is not None
-        assert row["github_repo"] == "waveapps/my-repo"
-        assert row["enabled"] is True
-        assert row["last_indexed_commit"] is None
-
-    def test_returns_error_for_missing_path(self):
-        result = _srv.register_codebase(
-            name="bad-repo",
-            path="/nonexistent/path/that/does/not/exist",
-        )
-        assert "Error" in result
-        assert "path" in result.lower()
-
-    def test_idempotent_registration(self, tmp_path):
-        _srv.register_codebase(name="my-repo", path=str(tmp_path))
-        result = _srv.register_codebase(name="my-repo", path=str(tmp_path), description="updated")
-        assert "Error" not in result
+        try:
+            row = db.get_codebase("identity")
+        finally:
+            db.close()
+        assert row["github_repo"] == "waveaccounting/identity"
+        assert row["path"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -175,3 +159,43 @@ class TestDeregisterCodebase:
     def test_returns_not_found_for_unknown(self):
         result = _srv.deregister_codebase("no-such-repo")
         assert "not found" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# list_codebases shows sync error
+# ---------------------------------------------------------------------------
+
+@requires_db
+class TestListCodebasesShowsSyncError:
+    def test_list_includes_sync_error(self):
+        from waverider.mcp_server import list_codebases
+        from waverider.database import DatabaseManager
+        db = DatabaseManager(dsn=_TEST_DSN)
+        try:
+            db.upsert_codebase_registration(name="nav", path=None,
+                                            github_repo="waveaccounting/nav", enabled=True)
+            db.record_sync_error("nav", "boom")
+        finally:
+            db.close()
+        out = list_codebases()
+        assert "nav" in out
+        assert "boom" in out
+
+
+# ---------------------------------------------------------------------------
+# discover_codebases
+# ---------------------------------------------------------------------------
+
+class TestDiscoverCodebases:
+    def test_returns_summary_text(self):
+        from waverider import mcp_server
+        from waverider.github_discovery import RepoInfo
+        from unittest.mock import patch
+        repos = [RepoInfo("identity", "waveaccounting/identity", "main", "id", "python")]
+        with patch.object(mcp_server, "_run_discovery", return_value={
+            "discovered": 1, "new": 1, "existing": 0
+        }) as run:
+            out = mcp_server.discover_codebases(org="waveaccounting")
+        run.assert_called_once()
+        assert "discovered" in out.lower()
+        assert "1" in out
