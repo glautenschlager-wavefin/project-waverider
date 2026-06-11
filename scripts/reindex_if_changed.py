@@ -8,7 +8,8 @@ Usage:
     # Run forever, checking every 5 minutes:
     poetry run python scripts/reindex_if_changed.py --interval 300
 
-    # Preview what would be reindexed without running anything:
+    # Preview what would be reindexed (still syncs managed clones, but skips
+    # all reindexing and database writes):
     poetry run python scripts/reindex_if_changed.py --once --dry-run
 """
 from __future__ import annotations
@@ -82,6 +83,9 @@ def poll_once(
             summary["failed"] += 1
             continue
 
+        if not dry_run:
+            db.clear_sync_error(cb["name"])
+
         if sha == cb.get("last_indexed_commit"):
             log.debug("%s is up to date (%s)", cb["name"], sha[:8])
             summary["skipped"] += 1
@@ -119,7 +123,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Log what would be reindexed without running build_index.py",
+        help="Sync managed clones but skip reindexing and all database writes",
     )
     parser.add_argument(
         "--log-level",

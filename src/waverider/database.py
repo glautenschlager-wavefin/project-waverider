@@ -618,6 +618,22 @@ class DatabaseManager:
                 (message, name),
             )
 
+    def clear_sync_error(self, name: str) -> None:
+        """Clear any recorded sync error after a successful sync.
+
+        Only writes when an error is currently recorded, so an up-to-date repo
+        that never failed is left untouched.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE codebase_metadata
+                SET last_sync_error = NULL, last_sync_error_at = NULL, updated_at = NOW()
+                WHERE name = %s AND last_sync_error IS NOT NULL
+                """,
+                (name,),
+            )
+
     def set_codebase_enabled(self, name: str, enabled: bool) -> bool:
         """Flip the ``enabled`` flag for a codebase. Returns False if not found."""
         with self._conn() as conn:

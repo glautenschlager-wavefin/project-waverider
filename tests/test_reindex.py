@@ -66,6 +66,20 @@ class TestPollOnce:
         assert summary["reindexed"] == 1
         db.update_last_indexed_commit.assert_called_once_with("test-repo", "abc1234")
 
+    def test_clears_stale_sync_error_on_successful_sync(self):
+        db = self._db_with({**_FAKE_CB, "last_indexed_commit": "abc1234"})
+        with patch.object(_mod.repo_manager, "ensure_current", return_value="abc1234"):
+            with patch.object(_mod, "run_reindex"):
+                poll_once(db, _PROJECT_ROOT, dry_run=False)
+        db.clear_sync_error.assert_called_once_with("test-repo")
+
+    def test_dry_run_does_not_clear_sync_error(self):
+        db = self._db_with({**_FAKE_CB, "last_indexed_commit": "abc1234"})
+        with patch.object(_mod.repo_manager, "ensure_current", return_value="abc1234"):
+            with patch.object(_mod, "run_reindex"):
+                poll_once(db, _PROJECT_ROOT, dry_run=True)
+        db.clear_sync_error.assert_not_called()
+
     def test_records_sync_error_and_skips_on_repo_sync_error(self):
         from waverider.repo_manager import RepoSyncError
         db = self._db_with({**_FAKE_CB, "last_indexed_commit": "abc1234"})
