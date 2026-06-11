@@ -311,7 +311,9 @@ project waverider/
 │   ├── load_test.py          # Search performance benchmarks
 │   ├── list_indices.py       # List built indices
 │   ├── index_stats.py        # Index statistics
-│   └── index_wave_repos.sh   # Batch-index Wave repos
+│   ├── discover_repos.py     # Discover org repos into the registry
+│   ├── seed_default_repos.py # Enable common Wave services
+│   └── reindex_if_changed.py # Sync managed clones & reindex on change
 │
 ├── indices/                  # Index metadata (generated)
 │
